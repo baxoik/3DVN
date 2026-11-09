@@ -1,6 +1,6 @@
 # 3DVN
 
-A native Nintendo 3DS visual novel engine with its own script language (`.3vs`).
+3DVN is a native visual novel engine for the Nintendo 3DS, heavily inspired by VNDS for the original DS (you can find an archive [here](https://github.com/BASLQC/vnds))
 
 Full documentation (building, installing games, script reference, limits, roadmap): see [documentation.txt](documentation.txt).
 
