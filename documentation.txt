@@ -1,0 +1,790 @@
+==============================================================================
+3DVN  -  Visual Novel Engine for the Nintendo 3DS
+Documentation  (living document; updated as the engine grows)
+==============================================================================
+
+Engine status: early development.
+Last updated for: per-game NVL artwork and presentation.
+
+CONTENTS
+  1. Overview
+  2. Building the engine
+  3. Installing and running a game
+  4. Game folder layout and file types
+  5. Controls
+  6. 3DVN Script reference (.3vs)
+  7. Audio and video
+  8. Saving and the backlog
+  9. Errors and troubleshooting
+ 10. Limits
+ 11. Architecture (for contributors)
+ 12. Testing
+ 13. Roadmap
+ 14. Changelog
+
+
+------------------------------------------------------------------------------
+1. OVERVIEW
+------------------------------------------------------------------------------
+3DVN is a native 3DS homebrew engine for visual novels. Authors write a game
+as a plain-text script plus image and audio files; the engine plays it. The
+script language is small and readable, but has variables, conditions, loops
+and subroutines so branching stories and stat tracking are possible.
+
+Screen layout: the top screen shows everything the player reads or picks:
+the scene (background, sprites), the text box, choice menus and the backlog.
+The bottom screen is the control panel: touch buttons (Menu, Backlog, Hide text,
+Quit) and status messages. All menus (game menu, save/load lists, glossary,
+backlog, quit prompt) appear on the top screen only; while one is open the
+bottom screen just says so.
+
+The engine ships no commercial game assets. The demo game uses generated
+placeholder art and tones.
+
+
+------------------------------------------------------------------------------
+2. BUILDING THE ENGINE
+------------------------------------------------------------------------------
+Requires devkitPro with devkitARM, libctru and citro2d/citro3d, with the
+DEVKITPRO and DEVKITARM environment variables set.
+
+    make          builds 3dvn.3dsx (and 3dvn.smdh)
+    make clean    removes build output
+
+Copy 3dvn.3dsx to sd:/3ds/ and launch it from the Homebrew Launcher.
+
+
+------------------------------------------------------------------------------
+3. INSTALLING AND RUNNING A GAME
+------------------------------------------------------------------------------
+Put each game in its own folder under:
+
+    sd:/3ds/3dvn/games/<GAMENAME>/
+
+Try the demo by copying the repository's games/demo folder to
+sd:/3ds/3dvn/games/demo. Launch 3DVN, pick the game from the list on the
+bottom screen (D-pad + A, or tap it).
+
+Sound requires the DSP firmware dump (sd:/3ds/dspfirm.cdc), which you can
+create with the DSP1 homebrew tool. Without it, the game still runs but
+silently, and a notice is shown.
+
+
+------------------------------------------------------------------------------
+4. GAME FOLDER LAYOUT AND FILE TYPES
+------------------------------------------------------------------------------
+    <GAMENAME>/
+        main.3vs            Script (required). Entry point of the game.
+        bg/NAME.png|jpg     Backgrounds. Ideally 400x240 (the top screen).
+        sprites/NAME.png    Character sprites. Transparent PNG, <= 1024x1024.
+        audio/NAME.wav      Music and sound effects.
+        game.3vc            Menu appearance and labels (optional, section 8.4).
+        glossary.3vg        Glossary terms (optional, section 8.5).
+        ui/NAME.png|jpg     UI artwork referenced by game.3vc (optional).
+        ui/NAME.bcfnt       Custom font referenced by game.3vc (optional).
+        video/NAME.3vv      Video frames (optional, section 7.2).
+        video/NAME.wav      Sound for that video (optional).
+
+Engine-specific file extensions:
+    .3vs     3DVN Script. Plain UTF-8 text.
+    .3vc     3DVN game configuration (menu look). Plain text.
+    .3vg     3DVN glossary. Plain text.
+    .3vv     3DVN video (JPEG frames in a simple container).
+    .3vsav   3DVN save file. Written to sd:/3ds/3dvn/saves/<GAMENAME>_<SLOT>.3vsav.
+    .3vopt   Per-game display preferences, written by the engine (section 8).
+
+In scripts you refer to assets by name without the extension (bg room looks
+for bg/room.png, then bg/room.jpg, then a file named exactly "room").
+Images may be any size up to 1024x1024; backgrounds are centered, sprites
+are bottom-aligned.
+
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+5. CONTROLS
+------------------------------------------------------------------------------
+Game list:    D-pad up/down + A, or tap an entry.   START exits.
+
+In a game (every action also has a touch button on the bottom screen):
+    A           Finish typing the line / go to next line / confirm a choice
+    D-pad       Move the choice cursor (choices are on the top screen)
+    X           Open the game menu (top screen): Save, Load, Backlog,
+                Glossary (if the game has one), Options, Quit
+    B           Hide / show the text box (and choices) to see the scene
+    R           Hold to fast-forward through text; stops at choices
+    L           Shortcut: open the backlog directly
+    SELECT      Quit to the game list (asks for confirmation)
+    START       Exit 3DVN immediately
+
+In the menu:         D-pad up/down + A (top screen);
+                     B or X closes. Backlog, Save, Load, Glossary and Options return
+                     to the menu with B.
+In Options:          D-pad up/down selects an option; A or left/right changes it.
+                     B or X returns to the game menu.
+In the glossary:     D-pad up/down moves through the list; A opens a term.
+                     In a term, up/down scrolls its description; B or X
+                     returns to the list. B or X from the list returns to menu.
+In the backlog:      D-pad up/down scroll one entry, left/right jump five
+                     entries (hold to repeat); B or L closes.
+In Save / Load:      D-pad up/down + A; B goes back. The list
+                     scrolls (8 rows visible, 15 slots).
+In the quit prompt:  A quits, B returns to the game.
+
+During a video: A or a tap on the screen skips it (unless the script says
+"noskip"); the other buttons are ignored until it ends.
+
+B never leaves the game, so progress is not lost by accident. While the text
+is hidden, press B or A to bring it back. Fast-forward skips all text and
+waits (it does not track which lines were already read) and stops at choices.
+
+Options are remembered separately for each game across launches, independently
+of save slots, in sd:/3ds/3dvn/settings/<GAMENAME>.3vopt. Textbox selects the
+default look or Custom if a valid textbox image is available for the selected
+style. Custom uses the game's textbox image, layout and colors. Without a
+custom image for that style, only Default is available. A saved Custom
+preference is retained if its image is temporarily unavailable, and becomes
+effective when the image returns.
+Default ignores the game's textbox and nameplate artwork, layout,
+and textbox colors, but keeps its font and explicit speaker colors. Display
+style selects ADV (a box at the bottom) or NVL (text over a dimmed scene, framed by
+a border). In NVL mode the game's dedicated NVL image is used if provided;
+otherwise its ADV textbox image is stretched to the large frame. The custom
+nameplate is not used. By default each dialogue event replaces the preceding
+one in NVL too. Games may opt in to an accumulating NVL page, with explicit
+page clears in their scripts. Hidden text also hides the NVL frame and dim.
+Missing options files use Custom when available, otherwise Default, and ADV
+unless the game specifies a different default display style.
+An existing preference for Default is respected. If a configured custom image
+cannot be loaded, a notice appears and Default is used. If a settings file is
+unreadable or invalid, a notice appears and defaults are used for that launch.
+Changes are saved immediately; if saving fails, the previous choice remains
+active and a notice appears. Check SD storage and the settings directory. A
+leftover <GAMENAME>.3vopt.tmp from an interrupted write must be removed after
+checking it is not needed before another change can be saved. If a
+<GAMENAME>.3vopt.bak file remains after interruption, the engine can read it
+when the main file is missing and reports recovery. Restore it to .3vopt if
+needed, or remove it only after confirming the main file is correct; a
+remaining backup prevents further changes.
+
+
+-----
+6. 3DVN SCRIPT REFERENCE (.3vs)
+------------------------------------------------------------------------------
+One command per line. Blank lines are ignored. A line whose first non-space
+character is # is a comment. Indentation is optional but recommended inside
+blocks. Words are separated by spaces; text containing spaces goes in
+"double quotes". Commands are lowercase.
+
+6.1 Characters
+    character ID "Display Name" [#RRGGBB]
+  Defines a speaker. ID is a short name used in dialogue lines; Display Name
+  is what the text box shows; the optional hex color tints the name.
+    character mira "Mira" #e87890
+
+6.2 Dialogue
+    ID: "Text"       Dialogue spoken by a defined character.
+    "Text"           Narration (no speaker name).
+  An undefined ID is shown literally as the speaker name.
+  Inside text:
+    {name}   inserts the value of variable "name"
+    \"       a double quote
+    \n       a line break
+    \{       a literal { (so it is not treated as a variable)
+  Text types out gradually; A completes it, A again continues.
+  An accumulating NVL game retains dialogue until a separate `page` command.
+  `page` clears the accumulated text without an extra button press. Include
+  desired spaces and \n line breaks explicitly in dialogue; otherwise events
+  join directly. ADV continues showing only the current dialogue event.
+
+6.3 Backgrounds
+    bg NAME [fade SECONDS]
+  Shows bg/NAME. With fade, it cross-fades from the old background. The
+  special names "black" and "white" need no image file.
+
+    bgloop BASE OVERLAY1 OVERLAY2 [HOLD FADE [fade SECONDS]]
+  Replaces the background with BASE and continuously composites
+  two centered images from bg/ above it, below sprites and text. Names may be
+  quoted and support {variable} substitution, just like bg. Use transparent
+  PNGs for overlays; their own alpha is multiplied by the animation opacity.
+  HOLD and FADE are shared literal durations in seconds (not variables):
+  HOLD is 0..600, FADE is 0.001..600, rounded to the nearest microsecond.
+  Omit both for the compatible defaults 0.45 and 0.15. The cycle lasts
+  3*(HOLD+FADE): base alone for HOLD; overlay 1 fades in for FADE and holds
+  for HOLD; overlay 1 fades out while overlay 2 fades in for FADE; overlay 2
+  holds for HOLD and fades out for FADE. With 0.45 0.15, fades occur at
+  0.45-0.60, 1.05-1.20 and 1.65-1.80 seconds. The shared schedule cannot
+  express different fade durations, unequal holds or gaps between overlays.
+  The animation continues during dialogue, menus and waits, including while
+  panels are open, and advances at fast-forward speed when fast-forwarding.
+  Another bgloop restarts it; any bg stops it (a bg fade starts from the old
+  base, not its overlays). Only one loop can be active. All three images must
+  fit in texture memory at once and follow the usual 1024x1024 image limit;
+  "black" and "white" are permitted for BASE, but overlays must be image files.
+  Failure to load any loop image, including an out-of-memory failure, displays
+  an error rather than silently continuing. Loop images are retained outside
+  the ordinary texture cache until the loop ends or the game is exited.
+  The optional transition fade cross-fades from the preceding background's
+  base image to the new loop's base. The old overlays are not retained, and
+  the new loop starts after the fade completes. Transition duration must be
+  0..600 seconds. Without it, the background changes immediately.
+
+    waitbg [skippable]
+  Waits for the current background fade to finish, or continues immediately
+  if none is running. With skippable, A or fast-forward completes it early.
+  Otherwise it cannot be skipped (fast-forward still advances time faster).
+  Saves preserve overlay names, timings and phase; phase is stored in
+  microseconds, subject to floating-point precision at longer durations.
+  Existing saves without a loop extension still load with no loop active;
+  saves with the original fixed-timing extension resume at 0.45/0.15.
+  Malformed or truncated extensions are rejected. As with other saves, editing
+  the script invalidates its old saves, and assets must remain available.
+
+6.4 Foreground sprites
+    show ID [IMAGE] [at POSITION | at X Y] [fade SECONDS]
+    hide ID [fade SECONDS]
+  ID is a slot name you choose (usually the character). IMAGE is the file in
+  sprites/; if omitted it defaults to ID. Showing an ID that is already on
+  screen swaps its image/position (use this for expression changes).
+  POSITION: farleft, left, center (default), right, farright (centered on
+  that spot, bottom-aligned).
+  "at X Y" (two whole numbers, may be negative) puts the sprite's top-left
+  corner at that pixel of the 400x240 top screen instead.
+  Up to 8 sprites at once.
+    show mira at left fade 0.5
+    show mira at 120 20
+    show mira mira_smile at right
+    hide mira fade 0.5
+
+6.4b Splitting a script across files
+    include FILE
+  Inserts FILE (a path inside the game folder, e.g. include ch1.3vs) at
+  that point, as if its text were typed there. Includes may nest up to 8
+  deep. Labels and characters are shared by all files. Names with "..", a
+  leading "/" or ":" are refused. Errors name the file and line. Editing
+  any included file invalidates old saves, like editing main.3vs.
+
+6.5 Timing
+    wait SECONDS         Pause; A skips the wait.
+
+6.6 Variables and expressions
+    set NAME = EXPRESSION
+    set NAME += EXPRESSION        (also -=)
+  Variables are created on first assignment. Reading a variable that was
+  never set gives 0. Values are integers or strings.
+  Expressions support:
+    numbers, "strings", true, false, variable names, ( )
+    unary:      - not !
+    arithmetic: * / %  then  + -        ("+" joins if either side is text)
+    comparison: == != < > <= >=
+    logic:      and (&&)  or (||)       (non-zero / non-empty text = true)
+    set name = "Ada"
+    set score += 10
+    set title = "Dr. " + name
+
+6.7 Conditions and loops
+    if EXPRESSION
+      ...
+    elif EXPRESSION
+      ...
+    else
+      ...
+    end
+
+    while EXPRESSION
+      ...
+    end
+  Blocks nest. Every block ends with "end". A loop that runs a very long
+  time without showing anything is stopped and reported as an error.
+
+6.8 Choices (shown on the top screen)
+    menu
+      choice "Text" [if EXPRESSION]
+        ...commands run when picked...
+      choice "Other text"
+        ...
+    end
+  The player picks with D-pad up/down and A; the choices appear over the
+  scene on the top screen (long choice text is shrunk to fit). A choice
+  with "if" is only offered when its condition is true (at least one choice
+  must be available). Up to 8 choices per menu. Choice text supports {name}.
+  After the chosen branch finishes, execution continues after "end" unless
+  the branch jumps elsewhere.
+
+6.9 Labels, jumps, subroutines
+    label NAME           Marks a position. Names: letters, digits, _
+    jump NAME            Continue at the label.
+    call NAME            Run from the label; "return" comes back here.
+    return               Return from a "call".
+    stop                 End the story.
+  Calls may nest up to 32 deep. Reaching the end of the file ends the story.
+
+6.10 Audio commands
+    music NAME [fade SECONDS]      Loop audio/NAME.wav as background music.
+    music stop [fade SECONDS]
+    sfx NAME                       Play audio/NAME.wav once.
+
+6.10b Video command
+    video NAME [noskip]            Play video/NAME.3vv full screen on the top
+                                   screen, then continue. The player can skip
+                                   it with A unless "noskip" is given. If the
+                                   video is missing or damaged a notice is
+                                   shown and the script carries on.
+
+6.11 Complete example
+    character mira "Mira" #e87890
+    set trust = 0
+    music theme fade 1
+    bg room fade 1
+    show mira at center fade 0.5
+    mira: "Which road do you take?"
+    menu
+      choice "The quiet street"
+        set trust += 1
+        sfx blip
+        bg street fade 1
+        mira: "Good pick. Trust is now {trust}."
+      choice "Stay in the room"
+        mira: "Cozy. We can wait."
+    end
+    if trust > 0
+      mira: "Thank you."
+    end
+    music stop fade 1.5
+    "The end."
+
+  A fuller version is in games/demo/main.3vs.
+
+
+------------------------------------------------------------------------------
+7. AUDIO AND VIDEO
+------------------------------------------------------------------------------
+7.1 Audio
+Supported: uncompressed PCM WAV, 8 or 16 bit, mono or stereo, 4000-48000 Hz.
+(Convert other formats first, e.g.:  ffmpeg -i in.ogg -ar 32000 out.wav)
+
+Music is streamed from the SD card, so length is not limited by memory, and
+loops forever. One music track plays at a time; starting another replaces it
+(with the new track fading in if "fade" is given).
+Sound effects are loaded fully into memory (max 2 MB each) and up to 4 play
+at once; a fifth replaces the oldest.
+All sound effects stop when the player advances past a dialogue or narration
+box, including during fast-forward. This also stops voice clips scripted as
+sound effects; music continues. Revealing an unfinished line does not stop
+the sound. Loading a save or leaving the game also stops sound effects.
+WAV files are large; use mono and a lower sample rate (22050-32000 Hz) for
+music to save SD space and keep streaming smooth. Compressed formats (Ogg,
+MP3) are planned.
+
+7.2 Video
+The 3DS has no software video codec that is fast enough for ordinary video, so
+3DVN uses its own simple format, .3vv: every frame is a JPEG, decoded one at a
+time on the CPU, with the sound in a separate WAV. Play it with the script
+command "video NAME" (section 6.10b); NAME refers to video/NAME.3vv, and the
+sound is video/NAME.wav if that file exists.
+
+Making a video: with ffmpeg installed, run on a PC
+
+    python3 tools/mk3vv.py clip.mp4 mygame/video/intro --fps 15 --size 256x144
+
+This writes intro.3vv and intro.wav. Options: --fps N, --size WxH (at most
+512x256), --quality Q (JPEG quality, 2 best to 31 smallest; default 6).
+"--frames FOLDER" packs a folder of existing numbered JPEG frames instead
+(no ffmpeg needed; no audio is made).
+
+Performance guide: JPEG decoding is done by the CPU, so the picture size
+matters most. 256x144 at 15 fps is comfortable on a New 3DS (3DVN turns on
+its faster CPU mode automatically) and usually fine on an original 3DS; 400x240
+may drop frames on an original 3DS. When the console cannot keep up, frames
+are skipped and the sound stays in step, so the video never runs late. Small
+videos are scaled up to fill the screen (keeping the aspect ratio). Frames
+must be 256 KB or smaller each; a typical 256x144 frame is 3-6 KB.
+During a video the background music is paused and resumed afterward (only
+when the video has its own sound file). Videos are not part of saves; you
+cannot save while one is playing.
+
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+8. SAVING AND THE BACKLOG
+------------------------------------------------------------------------------
+8.1 Save slots
+Each game has 15 save slots. Press X for the menu, choose Save Game, pick a
+slot, press A. Choose Load Game to restore one. Each slot shows the date/time and a
+preview of the line or choice that was on screen. Saving over a used slot
+replaces it without asking. Files are written to:
+
+    sd:/3ds/3dvn/saves/<GAMENAME>_<SLOT>.3vsav      (SLOT is 1 to 15)
+
+A save captures: script position, call stack, all variables, background,
+sprites, music, the line or choice menu on screen, and the backlog. Saves are
+written to a temporary file first, so a failed write cannot destroy an
+existing save.
+
+8.2 Script versions
+Each save records a fingerprint of main.3vs. If you edit the script, old saves
+are refused with "save is from a different script version", because their
+saved position would no longer point at the right place. (Authors: delete the
+saves of your game while developing.) Damaged saves are also detected and
+refused rather than crashing. Saves made by earlier engine versions (the old
+single "<GAMENAME>.3vsav" quick-save) are not compatible and are ignored.
+
+8.3 Backlog
+Every line of dialogue shown, and every choice the player picks (marked with
+"> "), is recorded. The newest 40 entries are kept. Press L to read them on
+the top screen, with speaker names in their colors. The backlog is stored in
+saves and restored on load.
+
+8.4 UI theme (game.3vc)
+Everything works with no setup. A game can restyle its interface with an
+optional text file game.3vc in the game folder. One "key value" per line;
+# starts a comment; every key is optional. Images are looked up in the game's
+ui/ folder by name (ui/NAME.png, .jpg, or the exact file name) and are
+stretched to the size of the element they skin, so use any size you like (a
+transparent PNG gives rounded corners and so on). Colors are #RRGGBB.
+Numbers outside the allowed range are ignored.
+
+General
+    menu_title  TEXT        Title at the top of the menu
+    default_display adv|nvl  Initial display style when no preference is saved
+    accent      #RRGGBB     Highlights, titles, default speaker-name color
+    panel       #RRGGBB     Box / button color when no image is given
+    text        #RRGGBB     Text color
+    bottom_color #RRGGBB    Background color of the bottom screen
+    font        NAME        Use ui/NAME.bcfnt instead of the system font
+                            (make one with: mkbcfnt -o NAME.bcfnt -s 12 font.ttf)
+    label_save, label_load, label_backlog, label_glossary, label_options, label_quit
+                            Rename the menu entries (up to 31 characters)
+
+Images (full-screen ones are shown at their own size, centered)
+    menu_bg      Top-screen backdrop for the menu, save/load, glossary (400x240)
+    backlog_bg   Top-screen backdrop for the backlog (400x240)
+    bottom_bg    Bottom-screen background (320x240), stretched to fit
+    textbox_img  Dialogue box          namebox_img   Speaker name plate
+    nvl_textbox_img  Optional NVL dialogue box (stretched to 384x224)
+    advance_img  Optional dialogue-advance animation strip
+    choice_img   Choice button         choice_sel_img  Selected choice button
+    item_img     Menu item / list row / bottom-screen button
+    item_sel_img Selected version of the above
+
+Dialogue box (pixels on the 400x240 top screen; defaults in brackets)
+    textbox_x [8] textbox_y [150] textbox_w [384] textbox_h [84]
+    textbox_alpha [215]    Opacity 0-255 of the flat box (no image)
+    text_x [10]            Dialogue offset from the box's left edge
+    text_y [26]            ... from its top when someone is speaking
+    narration_y [10]       ... from its top for narration (no speaker)
+    text_size [50]         Dialogue size in percent
+    name_x [10] name_y [5] Speaker name position, relative to the box; may be
+                           negative (to put the name above the box)
+    name_size [55]         Name size in percent
+    namebox_x [0] namebox_y [-22]
+                           Where the name plate image goes (its own size),
+                           relative to the box; drawn only when someone speaks
+    nvl_dim [155]          Scene dimming opacity, 0-255
+    nvl_border [1]         Draw the engine border: 1 yes, 0 no
+    nvl_margin_x [12]      Left/right text inset, 0-180 pixels
+    nvl_margin_y [12]      Top narration inset, 0-90 pixels
+    nvl_accumulate [0]     Retain dialogue until `page`: 1 yes, 0 no
+    advance_frames [1]     Number of equal-width horizontal animation frames, 1-128
+    advance_frame_ms [100] Time per frame in milliseconds, 1-10000
+    advance_scale [100]    Indicator size as a percentage, 10-400
+
+The optional advance_img is a PNG in ui/ containing a single horizontal row
+of equal-width frames. Its width must be divisible by advance_frames; images
+must fit the 1024x1024 texture limit. The icon loops after dialogue is fully
+revealed and appears after the final wrapped line, or on the next line if it
+does not fit. It is hidden while text is being revealed, during menus, and
+when text is hidden; it works with either ADV or NVL and either textbox
+preference. Configured but missing or invalid artwork produces a notice.
+Without an advance image, dialogue rendering is unchanged. For a themed
+indicator, dialogue is wrapped using the engine's word-wrapper so the icon
+can follow the visible text; wrapping may differ slightly from other themes.
+The Mahoyo preview uses the original line-wait icon for every dialogue stop;
+the converter does not yet distinguish original line and page wait glyphs.
+
+Accumulating pages are tracked even in ADV so switching styles retains the
+page. Text that exceeds the screen scrolls to the newest visible lines; the
+backlog remains available. Pages are limited to 8192 UTF-8 bytes: if this is
+exceeded, oldest whole dialogue events are removed and a notice is shown.
+Save files retain accumulated page text; older saves without it restore only
+the current dialogue. Saves made with this feature require the updated engine.
+
+NVL appearance settings apply only when the custom textbox is selected;
+the Default textbox retains the engine's dim, border and margins. The default
+display style applies to new or invalid preferences only; an existing saved
+preference always wins. A game's NVL artwork can include its own translucent
+background, so set nvl_dim to 0 to avoid dimming it twice.
+
+Choices
+    choice_w [340] choice_h [24] choice_gap [4]   Button size and spacing
+    choice_text_x [10]     Text indent inside the button
+    choice_size [50]       Text size in percent
+    choice_dim [150]       0-255, how much the scene is darkened behind them
+
+The theme applies to the dialogue box, choices, menu, save/load, backlog,
+glossary and the bottom-screen controls (not to the game picker). Up to about
+30 images are kept in memory at once with the scene's own images; keep
+themes modest. See games/demo/game.3vc and games/demo/ui/.
+
+8.5 Glossary (glossary.3vg)
+If glossary.3vg contains at least one term, a Glossary entry appears in the
+menu. Format: a line "term NAME" starts an entry; following lines (until the
+next term) are its description. Blank lines and line breaks are kept; lines
+starting with # are comments. Descriptions are limited to 500 characters
+(scrollable in the detail view); up to 64 terms.
+
+Terms are visible by default. To hide a term until a story variable is true,
+add an @unlock directive within that entry:
+
+    term Bookshop
+    @unlock found_bookshop
+    A small shop near the station.
+
+In the script, use "set found_bookshop = 1" to reveal it. An unset variable
+or numeric zero hides it; any nonzero number or nonempty string shows it.
+Setting it back to zero hides it again. The variable is stored in each story
+save, so loading an earlier save restores its earlier glossary visibility.
+Names must be script identifiers of at most 31 characters. Invalid or repeated
+@unlock directives hide the affected term and show a notice. When no terms
+are unlocked, the glossary displays an empty-state message. Existing glossary
+files without directives continue to show all terms. See games/demo/glossary.3vg:
+the Video term unlocks after the video.
+The demo script was updated for this example, so older demo saves will be
+rejected as a different script version. Other games' saves are unaffected.
+
+
+-----
+9. ERRORS AND TROUBLESHOOTING
+------------------------------------------------------------------------------
+Script mistakes are reported on both screens with the line number, e.g.
+"line 12: unknown label 'outside'". Press B to return to the game list.
+Compile errors prevent the game from starting; runtime errors (bad
+expression, empty menu, return without call) stop it where they occur.
+
+Missing images show a plain placeholder and a notice on the bottom screen
+("missing bg/room"). Audio problems also show a notice and the game
+continues.
+
+"No games found": check the folder is sd:/3ds/3dvn/games/NAME/main.3vs.
+No sound: check sd:/3ds/dspfirm.cdc exists; check the WAV format (section 7).
+You can check a script on a PC without the 3DS (see Testing).
+
+
+------------------------------------------------------------------------------
+10. LIMITS
+------------------------------------------------------------------------------
+    Games listed ........................ 32
+    Variables ........................... 128 (names up to 31 characters)
+    Dialogue line / string variable ..... 511 / 255 bytes
+    Choices per menu .................... 8
+    Sprites on screen ................... 8
+    Call depth .......................... 32
+    Nested blocks ....................... 32
+    Image size .......................... 1024x1024
+    Cached textures ..................... 32
+    Video size .......................... 512x256; 256 KB per frame; 100000 frames
+    Save slots per game ................. 15
+    Glossary terms ...................... 64 (500 characters each)
+    Backlog entries kept ................ 40 (each up to 12 wrapped lines)
+    Words on one script line ............ 16
+    Script line length .................. 1023 bytes
+
+
+------------------------------------------------------------------------------
+11. ARCHITECTURE (FOR CONTRIBUTORS)
+------------------------------------------------------------------------------
+    source/gs.c, gs.h     Portable compiler + virtual machine for 3DVN Script.
+                          Draws and plays nothing. gs_next() runs until the
+                          next "event" (say, menu, bg, show, hide, music, sfx,
+                          wait, end, error) which the frontend handles.
+                          All runtime state lives in the plain-data GsState,
+                          which is what makes saving trivial.
+    source/main.c         3DS frontend: game list, scene rendering (citro2d),
+                          text box, input, saves, image cache (stb_image).
+    source/audio.c, .h    ndsp audio: streamed looping music + sfx slots.
+    source/gamecfg.c, .h  Portable parsers for game.3vc and glossary.3vg.
+    source/display_options.c, .h  Per-game persistent display preferences.
+    source/vid.c, .h      Portable .3vv container parser (header, index checks,
+                          frame timing). Frames are decoded in main.c.
+    tools/mk3vv.py        PC tool that builds .3vv + .wav files.
+    tools/import_cozscript.py
+                          PC tool that turns a Committee of Zero Chaos;Head
+                          .mst message file(s) into a 3DVN script (dialogue
+                          text only; run on your own copy of the files).
+    tools/import_vnds.py  PC tool that converts a VNDS game folder to 3DVN
+                          (see tools/README_import_vnds.md).
+    tools/import_kirikiri.py
+                          Experimental KiriKiri scene/sequence preview;
+                          see tools/README_import_kirikiri.md for limitations.
+    tools/extract_systemnnn_music.py
+                          Extracts supported System-NNN WGQ music to WAV;
+                          see tools/README_systemnnn.md for limitations.
+    tools/extract_systemnnn_images.py
+                          Extracts supported System-NNN GPK image resources;
+                          see tools/README_systemnnn.md for limitations.
+    tools/inspect_systemnnn_spt.py
+                          Inspects System-NNN SPT records and text references;
+                          does not execute or convert story flow. See
+                          tools/README_systemnnn.md for usage and limitations.
+    tools/trace_systemnnn_spt.py
+                          Traces a limited SPT instruction subset with explicit
+                          state and case inputs; stops at unsupported behavior.
+                          See tools/README_systemnnn.md.
+    tools/extract_kirikiri_thumbnails.py
+                          Optional TLG5 thumbnail fallback for scene previews;
+                          requires a separate TLG decoder and Pillow.
+    tools/c0img.py        PC tool that extracts images from the Chaos;Head
+                          PSP BGL00.AFS / CHL00.AFS archives to PNG.
+    tools/c0scene.py      PC tool that lists the text and image commands of a
+                          Chaos;Head PSP scene script (SCHxx_xxx.BIN).
+    source/wrap.c, .h     Portable UTF-8 word wrapping used by the backlog.
+                          Takes a measuring callback, so it is unit-tested on
+                          a PC with a fake font.
+    source/wav.c, .h      Portable WAV header reader (unit-testable on a PC).
+    tests/                PC tests for the language and WAV reader.
+    games/demo/           Demo game.
+
+Adding a command: add an event type in gs.h, compile it in compile_line() in
+gs.c, emit it in gs_next(), and handle it in advance() in main.c. Then
+document it in section 6 here.
+
+
+------------------------------------------------------------------------------
+12. TESTING
+------------------------------------------------------------------------------
+On a PC with gcc:
+
+    gcc -Wall -fsanitize=address,undefined -o /tmp/t tests/test_gs.c source/gs.c source/wrap.c source/gamecfg.c && /tmp/t
+        Language, state validation, word-wrap and config/glossary tests.
+    gcc -o gscheck tests/check_scripts.c source/gs.c && ./gscheck games/demo/main.3vs
+        Syntax-check scripts without a 3DS.
+    gcc -o vidcheck tests/test_vid.c source/vid.c -lm && ./vidcheck games/demo/video/clip.3vv
+        Validate .3vv files and make sure every frame decodes.
+    gcc -o wavcheck tests/test_wav.c source/wav.c && ./wavcheck games/demo/audio/*.wav
+        Verify audio files are readable by the engine.
+
+
+------------------------------------------------------------------------------
+13. ROADMAP
+------------------------------------------------------------------------------
+Current focus: foreground, background, text, audio, choices and branching.
+Done: all of the above in basic form (WAV audio only), plus backlog,
+multiple save slots, in-game menu, glossary, UI theming and video.
+
+Planned, near term:
+    - Compressed audio (Ogg Vorbis)
+    - Rollback (step back through lines), text speed and auto mode
+    - Autosave, and a "Continue" entry on the game list
+    - Transitions beyond fades; sprite animation/movement
+    - A PC previewer for authors
+
+Planned, long term - interactivity (Ace Attorney-style investigation):
+    - Touch-driven scenes: tappable hotspots on the bottom screen or on a
+      scene image that run script labels when pressed
+    - Examine/investigate screens with a cursor, "present evidence" prompts,
+      and an inventory/court-record data type
+    - Cross-examination loops: statements stepped through with Press /
+      Present choices, branching on the correct evidence
+    - Scene state (which hotspots were explored) kept in variables so it
+      works with saves
+  These will be exposed as new script commands (for example a hotspot
+  definition block and an inventory/evidence set) and documented here.
+
+
+------------------------------------------------------------------------------
+14. CHANGELOG
+------------------------------------------------------------------------------
+Milestone 5 (current)
+    - Game themes may set a default display style and custom NVL dim, border
+      and text margins. The Mahoyo animated preview uses local original artwork.
+    - Optional dedicated NVL textbox artwork; the demo includes an example.
+    - Glossary terms can unlock through per-save story variables.
+    - Glossary lists terms before opening their scrollable descriptions.
+    - Custom textbox is offered only for games with a usable image; existing
+      per-game preferences are preserved.
+    - Options menu with per-game default/custom textbox preference and
+      ADV/NVL presentation; NVL mode dims and frames the scene.
+    - Experimental KiriKiri scene preview tool: converts basic text and
+      can use extracted PNG/JPEG/BMP backgrounds and common audio files.
+      An explicitly ordered multi-scene diagnostic preview is also available;
+      it does not interpret game route charts, calls or branches.
+      Unsupported commands and approximations are reported. It does not
+      yet convert full games, encrypted XP3 archives, TLG images, branching
+      or game-specific effects. See tools/README_import_kirikiri.md.
+    - Optional thumbnail extraction provides a low-resolution preview of
+      available backgrounds using a separate TLG5 decoder. It can extract
+      all matching thumbnails from a ZIP-format archive. The scene importer
+      can approximate some partial backgrounds as static composites; see
+      tools/README_import_kirikiri.md for assumptions and limitations.
+    - Full-resolution images can sometimes be extracted separately with
+      arc_unpacker, then supplied to the scene importer. Archive format,
+      encryption and image decoding differ between releases; see the guide.
+    - Stop sound effects when advancing past text, so voice clips do not
+      overlap subsequent lines. Music is unaffected.
+    - "include FILE" command, and "show ID IMAGE at X Y" pixel positions.
+    - tools/import_vnds.py SRC OUT [--source-size WIDTHxHEIGHT] [--scale S]
+      [--speakers] [--no-audio]
+      converts a VNDS game (script/, background/, foreground/, sound/).
+      One .3vs per .scr joined by include; labels are prefixed per file;
+      it infers the source canvas from referenced backgrounds and scales
+      images and sprite coordinates to fit 400x240 without stretching.
+      Use --source-size if inference is ambiguous, or --scale to override
+      the automatic scale. Pillow is required. Scaled images must not exceed
+      1024x1024. See tools/README_import_vnds.md for details.
+      "choice" sets "selected" like VNDS; a bgload
+      hides sprites like VNDS. Approximated and reported: gsetvar (normal
+      variable), random (set to low value), looping sound (played once),
+      "setvar ~" (skipped). Audio is converted to mono WAV with ffmpeg
+      (PATH, the imageio-ffmpeg pip package, or --ffmpeg; --music-rate and
+      --sfx-rate set quality). Without ffmpeg only .wav files are copied. --speakers turns "Name: text" lines into
+      dialogue. Only convert games you own or that are freely licensed.
+    - Fixed pictures drawing upside down (texture rows are now stored top
+      first). Affects backgrounds, sprites, UI art and video frames.
+    - tools/c0scene.py: dumps the text and image commands of a Chaos;Head PSP
+      scene script. The image ids it shows are not yet mapped reliably.
+    - Menus are top-screen only: the save/load list and quit prompt moved
+      from the bottom screen to the top; the bottom screen no longer mirrors
+      the menu (no touch input in menus).
+    - tools/c0img.py: extracts Chaos;Head PSP images (extract / sheet).
+      games/chaoshead now has background images (sky, ruins, girl, room);
+      the choice of image per line is by hand in main.3vs.
+    - tools/import_cozscript.py: converts .mst dialogue to .3vs; used for a
+      Chaos;Head test (games/chaoshead: the opening dream sequence and the
+      first room scene, text over a black background). Usage:
+      import_cozscript.py OUTDIR FILE.mst [FILE.mst ...]
+    - Full UI theming through game.3vc: images for the dialogue box, name
+      plate, choices, menu items and backdrops; positions, sizes, colors,
+      custom font, bottom-screen background.
+    - Video playback: "video NAME" command, .3vv format, tools/mk3vv.py.
+    - New 3DS CPU speed-up enabled.
+    - Demo now shows a themed UI and a short clip.
+
+Milestone 4
+    - X opens a game menu on the top screen: Save, Load, Backlog, Glossary,
+      Quit. Per-game appearance and labels via game.3vc.
+    - Optional glossary (glossary.3vg).
+    - B hides/shows the text box; hold R to fast-forward.
+    - 15 save slots per game (scrolling list). Y / old X shortcuts removed;
+      L still opens the backlog.
+
+Milestone 3
+    - Backlog (L): last 40 lines and choices, scrollable, saved with the game.
+    - 8 save slots per game with time and preview; Save/Load screens on the
+      bottom screen, usable by D-pad or touch. Saves are written safely and
+      validated on load; they record a script fingerprint.
+    - Choices now appear on the top screen (D-pad + A).
+    - Bottom screen is a touch control panel (Log, Save, Load, Quit).
+    - B no longer quits the game; SELECT / Quit asks for confirmation.
+    - Notices on the bottom screen disappear after a few seconds.
+    - Fixed: the text box could be hidden behind background images because
+      of draw depth; all drawing now uses explicit layers.
+    - Save format changed (old quick-saves are ignored).
+
+Milestone 2
+    - Project renamed to 3DVN. Output is now 3dvn.3dsx.
+    - Engine-specific extensions: scripts .3vs, saves .3vsav.
+    - Data path moved to sd:/3ds/3dvn/.
+    - Added WAV music (streamed, looping, fades) and sound effects.
+    - Music state is stored in saves.
+    - Added this documentation file.
+
+Milestone 1
+    - 3DVN Script compiler/VM, backgrounds, sprites, fades, text box,
+      choices with conditions, variables, control flow, quick-save.
