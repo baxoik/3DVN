@@ -1,3 +1,4 @@
+#include <math.h>
 #include <3ds.h>
 #include <citro2d.h>
 #include <dirent.h>
@@ -35,6 +36,8 @@ u32 __stacksize__ = 256 * 1024;
 #define MAX_GAMES 32
 #define MAX_SPRITES 8
 #define MAX_TEXTURES 32
+#define MAX_GALLERY_ITEMS 512
+#define GALLERY_PAGE_SIZE 6
 #define SAVE_MAGIC 0x32564433u
 #define SAVE_SLOTS 15
 #define LIST_ROWS 8
@@ -60,6 +63,7 @@ u32 __stacksize__ = 256 * 1024;
 #define Z_HEADER 0.70f
 #define Z_HEADER_TEXT 0.80f
 #define SCRIPT_FILE "main.3vs"
+#define EXTRAS_FILE "extras.3vs"
 #define SAVE_EXT ".3vsav"
 #define TEXT_CHARS_PER_SEC 45.0f
 
@@ -91,6 +95,14 @@ typedef struct {
 	float bg_elapsed, bg_duration;
 	Sprite sprites[MAX_SPRITES];
 } Scene;
+
+/* Transient screen effects; not saved. */
+static float shake_left, shake_total, shake_amp, flash_left, flash_total, flash_shade;
+static float fx_x, fx_y;
+static float cam_pan_x, cam_pan_y, cam_zoom = 1.0f;
+static float cam_from[3], cam_to[3] = {0.0f, 0.0f, 1.0f}, cam_t = 1.0f, cam_dur;
+static float hop_t[16]; /* seconds left, indexed by sprite slot */
+static float cur_hop;
 
 typedef struct {
 	char speaker[GS_NAME_LEN];
@@ -133,14 +145,18 @@ typedef enum {
 	PANEL_NONE, PANEL_MENU, PANEL_BACKLOG, PANEL_SAVE, PANEL_LOAD, PANEL_GLOSSARY, PANEL_QUIT, PANEL_OPTIONS
 } Panel;
 
-typedef enum { MODE_SELECT, MODE_PLAY, MODE_ERROR } Mode;
-typedef enum { PLAY_NONE, PLAY_TEXT, PLAY_MENU, PLAY_TIMER, PLAY_END, PLAY_VIDEO, PLAY_WAITBG } Wait;
+typedef enum { MODE_SELECT, MODE_TITLE, MODE_PLAY, MODE_ERROR } Mode;
+typedef enum { TITLE_START, TITLE_LOAD, TITLE_OPTIONS, TITLE_EXTRAS } TitleItem;
+typedef enum {
+	PLAY_NONE, PLAY_TEXT, PLAY_MENU, PLAY_TIMER, PLAY_END, PLAY_VIDEO, PLAY_WAITBG, PLAY_GALLERY
+} Wait;
 
 static char game_names[MAX_GAMES][64];
 static int game_count;
 static char game_dir[160];
 static char game_name[64];
 static GsProgram *program;
+static char current_script[GS_STR_LEN]; /* script switched to by `script`; empty while main.3vs runs */
 static GsState state;
 static GsEvent event;
 static Scene scene;
@@ -158,6 +174,8 @@ static int advance_visible;
 static int advance_available;
 static int menu_cursor;
 static int select_cursor;
+static int title_items[4], title_count, title_cursor;
+static int extras_available, extras_mode;
 static Panel panel;
 static int panel_cursor;
 static int last_slot;
@@ -182,6 +200,8 @@ static Panel panel_return;
 static int ui_hidden;
 static int fast_forward;
 static float ff_wait;
+static char gallery_items[MAX_GALLERY_ITEMS][GS_STR_LEN];
+static int gallery_count, gallery_cursor, gallery_detail;
 
 static CacheEntry cache[MAX_TEXTURES];
 static unsigned cache_clock;
@@ -204,6 +224,8 @@ static C2D_TextBuf text_buf;
 
 static u32 now_ms(void) { return (u32)osGetTime(); }
 static void fail_with(const char *text);
+static int switch_script(const char *name);
+static void stop_video(void);
 
 /* ---------- images ---------- */
 
@@ -497,6 +519,30 @@ static void apply_event_to_scene(const GsEvent *e)
 
 static void update_scene(float dt)
 {
+	fx_x = fx_y = 0.0f;
+	if (cam_t < 1.0f) {
+		cam_t += cam_dur > 0.0f ? dt / cam_dur : 1.0f;
+		if (cam_t > 1.0f) cam_t = 1.0f;
+		float e = cam_t * cam_t * (3.0f - 2.0f * cam_t);
+		cam_pan_x = cam_from[0] + (cam_to[0] - cam_from[0]) * e;
+		cam_pan_y = cam_from[1] + (cam_to[1] - cam_from[1]) * e;
+		cam_zoom = cam_from[2] + (cam_to[2] - cam_from[2]) * e;
+	}
+	for (int i = 0; i < MAX_SPRITES && i < 16; ++i) {
+		if (hop_t[i] > 0.0f) hop_t[i] = hop_t[i] > dt ? hop_t[i] - dt : 0.0f;
+	}
+	if (shake_left > 0.0f) {
+		shake_left -= dt;
+		if (shake_left < 0.0f) shake_left = 0.0f;
+		float fade = shake_total > 0.0f ? shake_left / shake_total : 0.0f;
+		float phase = (shake_total - shake_left) * 55.0f;
+		fx_x = shake_amp * fade * sinf(phase);
+		fx_y = shake_amp * fade * 0.6f * cosf(phase * 1.3f);
+	}
+	if (flash_left > 0.0f) {
+		flash_left -= dt;
+		if (flash_left < 0.0f) flash_left = 0.0f;
+	}
 	float loop_dt = dt;
 	if (scene.bg_prev[0] != '\0') {
 		loop_dt = gs_bg_fade_advance(&scene.bg_elapsed, scene.bg_duration, dt);
@@ -531,6 +577,10 @@ static void play_audio_event(const GsEvent *e, int is_music)
 	if (is_music && e->asset[0] == '\0') {
 		scene.music[0] = '\0';
 		audio_stop_music(e->seconds);
+		return;
+	}
+	if (!is_music && e->asset[0] == '\0') {
+		audio_stop_sfx();
 		return;
 	}
 	static const char *extensions[] = {".wav", ""};
@@ -905,7 +955,22 @@ static int load_slot(int slot)
 	}
 
 	const char *problem = NULL;
-	if (!read_ok) {
+	char previous_script[sizeof(current_script)];
+	int switched = 0;
+	snprintf(previous_script, sizeof(previous_script), "%s", current_script);
+	if (read_ok && data->header.magic == SAVE_MAGIC && data->header.script_hash == script_hash
+		&& !extras_mode && data->state.var_count >= 0 && data->state.var_count <= GS_MAX_VARS) {
+		const char *wanted = gs_variable_text(&data->state, "_script");
+		wanted = wanted != NULL && wanted[0] ? wanted : "";
+		if (strcmp(wanted, current_script) != 0 && strlen(wanted) < sizeof(current_script)) {
+			switched = switch_script(wanted);
+			if (!switched) {
+				problem = "chapter script is missing";
+			}
+		}
+	}
+	if (problem != NULL) {
+	} else if (!read_ok) {
 		problem = file == NULL ? "slot is empty" : "cannot read save";
 	} else if (data->header.magic != SAVE_MAGIC) {
 		problem = "unsupported save file";
@@ -928,6 +993,9 @@ static int load_slot(int slot)
 		}
 	}
 	if (problem != NULL) {
+		if (switched) {
+			switch_script(previous_script);
+		}
 		snprintf(notice, sizeof(notice), "%s", problem);
 		free(data);
 		return 0;
@@ -1037,6 +1105,10 @@ static void load_game_extras(void)
 		}
 		free(text);
 	}
+	snprintf(path, sizeof(path), "%s/" EXTRAS_FILE, game_dir);
+	struct stat extras_stat;
+	extras_available = stat(path, &extras_stat) == 0 && S_ISREG(extras_stat.st_mode)
+		&& extras_stat.st_size > 0;
 }
 
 static void hash_bytes(const unsigned char *data, size_t size)
@@ -1063,8 +1135,41 @@ static char *load_include(const char *name, void *context)
 	return (char *)data;
 }
 
+/* Compiles a chapter script for the `script` command and makes it the running program. */
+static int switch_script(const char *name)
+{
+	if (strstr(name, "..") != NULL || name[0] == '/' || strchr(name, ':') != NULL) {
+		snprintf(notice, sizeof(notice), "Bad script name");
+		return 0;
+	}
+	char path[320], error[GS_TEXT_LEN];
+	size_t size;
+	if (name[0]) {
+		snprintf(path, sizeof(path), "%s/%s.3vs", game_dir, name);
+	} else {
+		snprintf(path, sizeof(path), "%s/" SCRIPT_FILE, game_dir);
+	}
+	unsigned char *source = read_file(path, &size);
+	if (source == NULL) {
+		snprintf(notice, sizeof(notice), "Could not read %.40s", path + strlen(game_dir) + 1);
+		return 0;
+	}
+	GsProgram *next = gs_compile_ex((const char *)source, load_include, NULL, error, sizeof(error));
+	free(source);
+	if (next == NULL) {
+		snprintf(notice, sizeof(notice), "%.40s: %.60s", name, error);
+		return 0;
+	}
+	gs_free(program);
+	program = next;
+	snprintf(current_script, sizeof(current_script), "%s", name);
+	return 1;
+}
+
 static void start_game(const char *name)
 {
+	extras_mode = 0;
+	current_script[0] = '\0';
 	gs_free(program);
 	program = NULL;
 	clear_bgloop();
@@ -1106,7 +1211,69 @@ static void start_game(const char *name)
 	ui_hidden = 0;
 	last_slot = 0;
 	waiting = PLAY_NONE;
+	title_count = 0;
+	title_items[title_count++] = TITLE_START;
+	title_items[title_count++] = TITLE_LOAD;
+	title_items[title_count++] = TITLE_OPTIONS;
+	if (extras_available) {
+		title_items[title_count++] = TITLE_EXTRAS;
+	}
+	title_cursor = 0;
+	refresh_slots();
+	mode = MODE_TITLE;
+}
+
+static void begin_game(void)
+{
+	gs_state_init(program, &state);
+	memset(&backlog, 0, sizeof(backlog));
+	memset(log_layout, 0, sizeof(log_layout));
+	memset(&event, 0, sizeof(event));
+	panel = PANEL_NONE;
+	panel_return = PANEL_NONE;
+	ui_hidden = 0;
+	waiting = PLAY_NONE;
 	mode = MODE_PLAY;
+}
+
+static void start_extras(void)
+{
+	char path[320], error[GS_TEXT_LEN];
+	size_t size;
+	snprintf(path, sizeof(path), "%s/" EXTRAS_FILE, game_dir);
+	unsigned char *source = read_file(path, &size);
+	if (source == NULL) {
+		snprintf(notice, sizeof(notice), "Could not read " EXTRAS_FILE);
+		return;
+	}
+	unsigned main_hash = script_hash;
+	script_hash = 2166136261u;
+	hash_bytes(source, size);
+	GsProgram *extras_program = gs_compile_ex((const char *)source, load_include, NULL,
+		error, sizeof(error));
+	free(source);
+	if (extras_program == NULL) {
+		script_hash = main_hash;
+		snprintf(notice, sizeof(notice), "Extras script: %.70s", error);
+		return;
+	}
+	gs_free(program);
+	program = extras_program;
+	extras_mode = 1;
+	memset(&scene, 0, sizeof(scene));
+	clear_bgloop();
+	audio_stop_music(0.0f);
+	audio_stop_sfx();
+	nvl_page_clear(&nvl_page);
+	begin_game();
+}
+
+static void return_to_title(void)
+{
+	char name[sizeof(game_name)];
+	snprintf(name, sizeof(name), "%s", game_name);
+	stop_video();
+	start_game(name);
 }
 
 /* ---------- video ---------- */
@@ -1223,6 +1390,92 @@ static void update_video(float dt, u32 down)
 	}
 }
 
+static int gallery_name_compare(const void *left, const void *right)
+{
+	return strcmp((const char *)left, (const char *)right);
+}
+
+static int start_gallery(void)
+{
+	char directory[320];
+	snprintf(directory, sizeof(directory), "%s/gallery/thumbs", game_dir);
+	DIR *handle = opendir(directory);
+	if (handle == NULL) {
+		snprintf(message, sizeof(message), "Gallery: cannot open gallery/thumbs");
+		mode = MODE_ERROR;
+		return 0;
+	}
+
+	gallery_count = 0;
+	struct dirent *entry;
+	while ((entry = readdir(handle)) != NULL && gallery_count < MAX_GALLERY_ITEMS) {
+		const char *extension = strrchr(entry->d_name, '.');
+		if (extension == NULL || (strcmp(extension, ".png") && strcmp(extension, ".jpg"))) {
+			continue;
+		}
+		size_t length = (size_t)(extension - entry->d_name);
+		if (length == 0 || length >= GS_STR_LEN) {
+			continue;
+		}
+		char path[576];
+		snprintf(path, sizeof(path), "%s/%s", directory, entry->d_name);
+		struct stat info;
+		if (stat(path, &info) != 0 || !S_ISREG(info.st_mode)) {
+			continue;
+		}
+		int duplicate = 0;
+		for (int i = 0; i < gallery_count; ++i) {
+			if (strlen(gallery_items[i]) == length
+				&& strncmp(gallery_items[i], entry->d_name, length) == 0) {
+				duplicate = 1;
+				break;
+			}
+		}
+		if (!duplicate) {
+			memcpy(gallery_items[gallery_count], entry->d_name, length);
+			gallery_items[gallery_count][length] = '\0';
+			++gallery_count;
+		}
+	}
+	closedir(handle);
+	if (gallery_count == 0) {
+		snprintf(message, sizeof(message), "Gallery: no thumbnails in gallery/thumbs");
+		mode = MODE_ERROR;
+		return 0;
+	}
+	qsort(gallery_items, (size_t)gallery_count, sizeof(gallery_items[0]), gallery_name_compare);
+	gallery_cursor = 0;
+	gallery_detail = 0;
+	return 1;
+}
+
+static void start_effect(const GsEvent *e)
+{
+	if (!strcmp(e->asset, "camera")) {
+		int small = !strcmp(e->text, "small");
+		float zoom = small ? 1.05f : 1.12f, reach = small ? 10.0f : 24.0f;
+		float target[3] = {0.0f, 0.0f, 1.0f};
+		if (e->pos[0] == 'l') { target[0] = reach; target[2] = zoom; }
+		else if (e->pos[0] == 'r') { target[0] = -reach; target[2] = zoom; }
+		else if (e->pos[0] == 'd') { target[1] = -reach / 2.0f; target[2] = zoom; }
+		cam_from[0] = cam_pan_x; cam_from[1] = cam_pan_y; cam_from[2] = cam_zoom;
+		memcpy(cam_to, target, sizeof(target));
+		cam_dur = e->seconds;
+		cam_t = cam_dur > 0.0f ? 0.0f : 1.0f;
+		if (cam_t >= 1.0f) { cam_pan_x = target[0]; cam_pan_y = target[1]; cam_zoom = target[2]; }
+	} else if (!strcmp(e->asset, "hop")) {
+		for (int i = 0; i < MAX_SPRITES && i < 16; ++i) {
+			if (scene.sprites[i].active && !strcmp(scene.sprites[i].name, e->pos)) hop_t[i] = e->seconds;
+		}
+	} else if (!strcmp(e->asset, "shake")) {
+		shake_total = shake_left = e->seconds;
+		shake_amp = strtof(e->pos, NULL);
+	} else {
+		flash_total = flash_left = e->seconds;
+		flash_shade = !strcmp(e->pos, "black") ? 0.0f : 255.0f;
+	}
+}
+
 /* Runs the script until something needs the player's attention. */
 static void advance(void)
 {
@@ -1232,12 +1485,27 @@ static void advance(void)
 		case GS_EV_PAGE:
 			nvl_page_clear(&nvl_page);
 			continue;
+		case GS_EV_SCRIPT:
+			if (!switch_script(event.asset)) {
+				fail_with(notice);
+				return;
+			}
+			continue;
+		case GS_EV_GALLERY:
+			if (start_gallery()) {
+				waiting = PLAY_GALLERY;
+				ui_hidden = 0;
+			}
+			return;
 		case GS_EV_BG:
 		case GS_EV_BGLOOP:
 		case GS_EV_SHOW:
 		case GS_EV_HIDE:
 			apply_event_to_scene(&event);
 			if (mode == MODE_ERROR) return;
+			continue;
+		case GS_EV_EFFECT:
+			start_effect(&event);
 			continue;
 		case GS_EV_MUSIC:
 		case GS_EV_SFX:
@@ -1281,6 +1549,10 @@ static void advance(void)
 			}
 			continue;
 		case GS_EV_END:
+			if (extras_mode) {
+				return_to_title();
+				return;
+			}
 			waiting = PLAY_END;
 			return;
 		case GS_EV_ERROR: {
@@ -1333,11 +1605,22 @@ static void rect(float x, float y, float w, float h, u32 color, float z)
 	C2D_DrawRectangle(x, y, z, w, h, color, color, color, color);
 }
 
+static void cam_apply(float *x, float *y, float width, float height, float *scale)
+{
+	*scale = cam_zoom;
+	*x = 200.0f + (*x - 200.0f) * cam_zoom + cam_pan_x;
+	*y = 120.0f + (*y - 120.0f) * cam_zoom + cam_pan_y;
+	(void)width; (void)height;
+}
+
 static void draw_picture(const Picture *picture, float x, float y, float alpha)
 {
-	C2D_ImageTint tint;
-	C2D_AlphaImageTint(&tint, alpha);
-	C2D_DrawImageAt(picture->image, x, y, Z_SPRITE, &tint, 1.0f, 1.0f);
+	float scale;
+	y += cur_hop;
+	cam_apply(&x, &y, (float)picture->width, (float)picture->height, &scale);
+	C2D_ImageTint camtint;
+	C2D_AlphaImageTint(&camtint, alpha);
+	C2D_DrawImageAt(picture->image, x + fx_x, y + fx_y, Z_SPRITE, &camtint, scale, scale);
 }
 
 static void draw_bg_layer(const char *name, float alpha, float z)
@@ -1351,7 +1634,9 @@ static void draw_bg_layer(const char *name, float alpha, float z)
 		float y = (TOP_H - (float)picture->height) / 2.0f;
 		C2D_ImageTint tint;
 		C2D_AlphaImageTint(&tint, alpha);
-		C2D_DrawImageAt(picture->image, x, y, z, &tint, 1.0f, 1.0f);
+		float scale;
+		cam_apply(&x, &y, (float)picture->width, (float)picture->height, &scale);
+		C2D_DrawImageAt(picture->image, x + fx_x, y + fx_y, z, &tint, scale, scale);
 		return;
 	}
 	u32 shade = strcmp(name, "white") == 0 ? 255 : strcmp(name, "black") == 0 ? 0 : 70;
@@ -1589,11 +1874,30 @@ static void draw_scene(void)
 	for (int index = 0; index < MAX_SPRITES; ++index) {
 		const Sprite *sprite = &scene.sprites[index];
 		Picture *picture = sprite->active ? get_picture("sprites", sprite->asset) : NULL;
-		if (picture != NULL) {
+		if (picture != NULL && !strcmp(sprite->pos, "face")) {
+			/* Speaker portrait: fixed above the text box's left corner, unaffected by camera effects. */
+			int face_in_box = config.num[NUM_FACE_BOX]
+				&& display_options_use_custom(&display_options, current_textbox_available());
+			if (!display_options.nvl && !face_in_box) {
+				C2D_ImageTint tint;
+				C2D_AlphaImageTint(&tint, sprite->alpha);
+				C2D_DrawImageAt(picture->image, (float)config.num[NUM_TEXTBOX_X],
+					(float)config.num[NUM_TEXTBOX_Y] - (float)picture->height - 2.0f, Z_BOX - 0.01f,
+					&tint, 1.0f, 1.0f);
+			}
+		} else if (picture != NULL) {
 			float x, y;
 			sprite_origin(sprite->pos, (float)picture->width, (float)picture->height, &x, &y);
+			cur_hop = index < 16 && hop_t[index] > 0.0f
+				? -fabsf(sinf(hop_t[index] / 0.35f * 6.2831853f * 1.0f)) * 14.0f : 0.0f;
 			draw_picture(picture, x, y, sprite->alpha);
+			cur_hop = 0.0f;
 		}
+	}
+	if (flash_left > 0.0f && flash_total > 0.0f) {
+		u8 shade = (u8)flash_shade;
+		rect(0, 0, TOP_W, TOP_H, C2D_Color32(shade, shade, shade, (u8)(255.0f * flash_left / flash_total)),
+			Z_SPRITE + 0.05f);
 	}
 }
 
@@ -1633,21 +1937,42 @@ static void draw_textbox(void)
 		rect(bx, by, bw, bh, fill, Z_BOX);
 		rect(bx, by, bw, 2, custom ? theme_accent() : COLOR_ACCENT, Z_BOX);
 	}
+	float face_inset = 0.0f;
+	if (custom && !display_options.nvl && n[NUM_FACE_BOX]) {
+		for (int index = 0; index < MAX_SPRITES; ++index) {
+			const Sprite *sprite = &scene.sprites[index];
+			if (!sprite->active || strcmp(sprite->pos, "face") != 0 || sprite->alpha <= 0.0f) continue;
+			Picture *picture = get_picture("sprites", sprite->asset);
+			if (picture == NULL) continue;
+			float max_width = fmaxf(1.0f, fminf(80.0f, bw - 28.0f));
+			float scale = fminf(1.0f, fminf(max_width / (float)picture->width,
+				(bh + 8.0f) / (float)picture->height));
+			float face_width = (float)picture->width * scale;
+			C2D_ImageTint tint;
+			C2D_AlphaImageTint(&tint, sprite->alpha);
+			C2D_DrawImageAt(picture->image, bx + 4.0f, by + bh - (float)picture->height * scale,
+				Z_BOX + 0.03f, &tint, scale, scale);
+			face_inset = fmaxf(face_inset, face_width + 12.0f);
+		}
+	}
 	if (named) {
 		Picture *plate = custom && !display_options.nvl ? ui_image(IMG_NAMEBOX) : NULL;
 		if (plate != NULL) {
 			C2D_DrawImageAt(plate->image, bx + (float)n[NUM_NAMEBOX_X], by + (float)n[NUM_NAMEBOX_Y],
 				Z_BOX + 0.02f, NULL, 1.0f, 1.0f);
 		}
-		draw_line(event.speaker, bx + (display_options.nvl ? (float)n[NUM_NVL_MARGIN_X] : (float)n[NUM_NAME_X]),
+		draw_line(event.speaker, bx + (display_options.nvl ? (float)n[NUM_NVL_MARGIN_X]
+			: fmaxf((float)n[NUM_NAME_X], face_inset)),
 			by + (display_options.nvl ? (float)n[NUM_NVL_MARGIN_Y] - 2.0f : (float)n[NUM_NAME_Y]),
 			(float)n[NUM_NAME_SIZE] / 100.0f,
 			event.color != 0 || custom ? speaker_color(event.color) : COLOR_ACCENT, Z_TEXT, 0.0f);
 	}
 	float text_x = display_options.nvl ? (float)n[NUM_NVL_MARGIN_X] : (float)n[NUM_TEXT_X];
+	float right_margin = text_x;
+	text_x = fmaxf(text_x, face_inset);
 	float text_y = display_options.nvl ? (float)n[NUM_NVL_MARGIN_Y] + (named ? 22.0f : 0.0f)
 		: (float)(named ? n[NUM_TEXT_Y] : n[NUM_NARRATION_Y]);
-	float width = bw - 2.0f * text_x;
+	float width = bw - text_x - right_margin;
 	float scale = (float)n[NUM_TEXT_SIZE] / 100.0f;
 	u32 color = custom && config.has_text ? theme_text() : C2D_Color32(235, 235, 235, 255);
 	if (accumulating) {
@@ -1829,16 +2154,112 @@ static void draw_glossary(void)
 static void draw_slot_list(void);
 static void draw_quit_confirm(void);
 
+static const char *title_item_label(int item)
+{
+	switch (item) {
+	case TITLE_START: return config.title_start;
+	case TITLE_LOAD: return config.title_load;
+	case TITLE_OPTIONS: return config.title_options;
+	case TITLE_EXTRAS: return config.title_extras;
+	default: return "";
+	}
+}
+
+static void draw_gallery(void)
+{
+	rect(0, 0, TOP_W, TOP_H, C2D_Color32(0, 0, 0, 255), Z_BG);
+	if (gallery_detail) {
+		Picture *picture = get_picture("bg", gallery_items[gallery_cursor]);
+		if (picture != NULL) {
+			float scale = TOP_W / (float)picture->width;
+			if (TOP_H / (float)picture->height < scale) {
+				scale = TOP_H / (float)picture->height;
+			}
+			float width = picture->width * scale;
+			float height = picture->height * scale;
+			C2D_DrawImageAt(picture->image, (TOP_W - width) / 2.0f, (TOP_H - height) / 2.0f,
+				Z_BG + 0.01f, NULL, scale, scale);
+		} else {
+			draw_line("CG image is missing from bg/", 18, 110, 0.5f,
+				C2D_Color32(255, 150, 140, 255), Z_OVERLAY_TEXT, TOP_W - 36);
+		}
+		rect(0, TOP_H - 19, TOP_W, 19, C2D_Color32(0, 0, 0, 190), Z_OVERLAY);
+		draw_line(gallery_items[gallery_cursor], 8, TOP_H - 17, 0.38f,
+			C2D_Color32(235, 235, 235, 255), Z_OVERLAY_TEXT, TOP_W - 16);
+		return;
+	}
+
+	draw_line("CG Gallery", 10, 5, 0.55f, theme_accent(), Z_OVERLAY_TEXT, 250);
+	char page[32];
+	snprintf(page, sizeof(page), "%d / %d",
+		gallery_cursor / GALLERY_PAGE_SIZE + 1,
+		(gallery_count + GALLERY_PAGE_SIZE - 1) / GALLERY_PAGE_SIZE);
+	draw_line(page, 330, 7, 0.4f, C2D_Color32(200, 210, 205, 255), Z_OVERLAY_TEXT, 60);
+	for (int cell = 0; cell < GALLERY_PAGE_SIZE; ++cell) {
+		int index = gallery_cursor / GALLERY_PAGE_SIZE * GALLERY_PAGE_SIZE + cell;
+		if (index >= gallery_count) break;
+		int column = cell % 3, row = cell / 3;
+		float x = 8.0f + (float)column * 128.0f;
+		float y = 30.0f + (float)row * 93.0f;
+		u32 border = index == gallery_cursor ? theme_accent() : C2D_Color32(50, 65, 68, 255);
+		rect(x, y, 120, 87, border, Z_OVERLAY);
+		rect(x + 2, y + 2, 116, 83, C2D_Color32(16, 24, 27, 255), Z_OVERLAY + 0.01f);
+
+		Picture *thumb = get_picture("gallery/thumbs", gallery_items[index]);
+		if (thumb != NULL) {
+			float scale = 112.0f / (float)thumb->width;
+			if (66.0f / (float)thumb->height < scale) {
+				scale = 66.0f / (float)thumb->height;
+			}
+			float width = (float)thumb->width * scale;
+			float height = (float)thumb->height * scale;
+			C2D_DrawImageAt(thumb->image, x + (120.0f - width) / 2.0f,
+				y + 4.0f + (66.0f - height) / 2.0f, Z_OVERLAY + 0.02f, NULL, scale, scale);
+		} else {
+			draw_line("Missing thumb", x + 5.0f, y + 28.0f, 0.35f,
+				C2D_Color32(255, 150, 140, 255), Z_OVERLAY_TEXT, 110);
+		}
+		draw_line(gallery_items[index], x + 5.0f, y + 71.0f, 0.33f,
+			C2D_Color32(230, 235, 232, 255), Z_OVERLAY_TEXT, 110);
+	}
+	draw_line("A preview   B exit", 118, 220, 0.38f,
+		C2D_Color32(165, 185, 180, 255), Z_OVERLAY_TEXT, 170);
+}
+
+static void draw_title_menu(void)
+{
+	draw_backdrop(IMG_MENU_BG, 255);
+	const char *title = config.title[0] != '\0' ? config.title : game_name;
+	draw_line(title, 24, 25, 0.8f, theme_accent(), Z_OVERLAY_TEXT, TOP_W - 48);
+	rect(40, 58, TOP_W - 80, 1, theme_accent(), Z_OVERLAY);
+	for (int index = 0; index < title_count; ++index) {
+		draw_list_row(76.0f + (float)index * 34.0f,
+			title_item_label(title_items[index]), index == title_cursor);
+	}
+	draw_line("D-pad choose   A confirm   B game list", 40, 224, 0.4f,
+		C2D_Color32(150, 170, 165, 255), Z_OVERLAY_TEXT, 0.0f);
+}
+
 static void draw_top(C3D_RenderTarget *target)
 {
 	C2D_TargetClear(target, C2D_Color32(0, 0, 0, 255));
 	C2D_SceneBegin(target);
 	C2D_TextBufClear(text_buf);
 
-	if (mode != MODE_PLAY) {
+	if (mode == MODE_SELECT || mode == MODE_ERROR) {
 		draw_line("3DVN", 20, 20, 0.7f, COLOR_ACCENT, Z_TEXT, 0.0f);
 		if (mode == MODE_ERROR) {
 			draw_wrapped(message, 20, 70, TOP_W - 40, 0.5f, C2D_Color32(255, 140, 120, 255), Z_TEXT);
+		}
+		return;
+	}
+	if (mode == MODE_TITLE) {
+		if (panel == PANEL_LOAD) {
+			draw_slot_list();
+		} else if (panel == PANEL_OPTIONS) {
+			draw_options();
+		} else {
+			draw_title_menu();
 		}
 		return;
 	}
@@ -1850,6 +2271,10 @@ static void draw_top(C3D_RenderTarget *target)
 		}
 		C2D_DrawImageAt(video.picture->image, (TOP_W - (float)video.picture->width * scale) / 2.0f,
 			(TOP_H - (float)video.picture->height * scale) / 2.0f, Z_BG, NULL, scale, scale);
+		return;
+	}
+	if (waiting == PLAY_GALLERY) {
+		draw_gallery();
 		return;
 	}
 	draw_scene();
@@ -1976,13 +2401,25 @@ static void draw_bottom(C3D_RenderTarget *target)
 				index == select_cursor ? C2D_Color32(10, 16, 18, 255) : C2D_Color32(220, 230, 225, 255),
 				Z_TEXT, BOTTOM_W - 44);
 		}
-		draw_line("A start   START exit", 14, 224, 0.4f, dim, Z_TEXT, 0.0f);
+		draw_line("A select   START exit", 14, 224, 0.4f, dim, Z_TEXT, 0.0f);
 		return;
 	}
 	if (mode == MODE_ERROR) {
 		draw_line("Script error", 14, 6, 0.55f, C2D_Color32(255, 140, 120, 255), Z_TEXT, 0.0f);
 		draw_wrapped(message, 14, 34, BOTTOM_W - 28, 0.45f, white, Z_TEXT);
-		draw_line("B back to list", 14, 224, 0.4f, dim, Z_TEXT, 0.0f);
+		draw_line(extras_mode ? "B return to title" : "B back to list",
+			14, 224, 0.4f, dim, Z_TEXT, 0.0f);
+		return;
+	}
+	if (mode == MODE_TITLE) {
+		draw_line(config.title[0] != '\0' ? config.title : game_name,
+			14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
+		draw_line(panel == PANEL_NONE ? "A select   D-pad choose   B game list"
+			: "Title menu panel on the top screen",
+			14, 40, 0.45f, dim, Z_TEXT, BOTTOM_W - 28);
+		if (notice[0] != '\0') {
+			draw_line(notice, 14, 212, 0.45f, C2D_Color32(255, 200, 120, 255), Z_TEXT, BOTTOM_W - 28);
+		}
 		return;
 	}
 
@@ -1994,6 +2431,13 @@ static void draw_bottom(C3D_RenderTarget *target)
 	if (waiting == PLAY_VIDEO) {
 		draw_line("Playing video", 14, 6, 0.55f, theme_accent(), Z_TEXT, 0.0f);
 		draw_line(video.skippable ? "A or touch: skip" : "Please wait", 14, 40, 0.45f, dim, Z_TEXT, 0.0f);
+		return;
+	}
+	if (waiting == PLAY_GALLERY) {
+		draw_line("CG Gallery", 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
+		draw_line(gallery_detail ? "Left/Right browse  A grid" : "D-pad choose  A preview",
+			14, 40, 0.44f, dim, Z_TEXT, BOTTOM_W - 28);
+		draw_line("B back / exit", 14, 58, 0.44f, dim, Z_TEXT, BOTTOM_W - 28);
 		return;
 	}
 
@@ -2022,6 +2466,8 @@ static void draw_bottom(C3D_RenderTarget *target)
 
 static void leave_game(void)
 {
+	extras_mode = 0;
+	extras_available = 0;
 	audio_stop_music(0.0f);
 	audio_stop_sfx();
 	scene.music[0] = '\0';
@@ -2088,6 +2534,41 @@ static void choose_menu_item(int index)
 	}
 }
 
+static void choose_title_item(void)
+{
+	switch (title_items[title_cursor]) {
+	case TITLE_START:
+		begin_game();
+		break;
+	case TITLE_LOAD:
+		open_panel(PANEL_LOAD);
+		break;
+	case TITLE_OPTIONS:
+		open_panel(PANEL_OPTIONS);
+		break;
+	case TITLE_EXTRAS:
+		start_extras();
+		break;
+	}
+}
+
+static void handle_title_input(u32 down, u32 repeat)
+{
+	if (down & KEY_B) {
+		leave_game();
+		return;
+	}
+	if (repeat & KEY_DDOWN) {
+		title_cursor = (title_cursor + 1) % title_count;
+	}
+	if (repeat & KEY_DUP) {
+		title_cursor = (title_cursor + title_count - 1) % title_count;
+	}
+	if (down & KEY_A) {
+		choose_title_item();
+	}
+}
+
 static int hit_button(const Button *buttons, int count, const touchPosition *touch)
 {
 	for (int index = 0; index < count; ++index) {
@@ -2116,6 +2597,7 @@ static void confirm_slot(void)
 		snprintf(notice, sizeof(notice), "slot %d is empty", panel_cursor + 1);
 	} else if (load_slot(panel_cursor)) {
 		panel = panel_return = PANEL_NONE;
+		mode = MODE_PLAY;
 	} else {
 		refresh_slots();
 	}
@@ -2234,6 +2716,42 @@ static void handle_panel_input(u32 down, u32 repeat)
 
 static void handle_play_input(u32 down, u32 held, float dt)
 {
+	if (waiting == PLAY_GALLERY) {
+		if (gallery_detail) {
+			if (down & KEY_B) {
+				gallery_detail = 0;
+			} else if (down & KEY_A) {
+				gallery_detail = 0;
+			} else if (down & KEY_DLEFT) {
+				gallery_cursor = (gallery_cursor + gallery_count - 1) % gallery_count;
+			} else if (down & KEY_DRIGHT) {
+				gallery_cursor = (gallery_cursor + 1) % gallery_count;
+			}
+		} else if (down & KEY_B) {
+			waiting = PLAY_NONE;
+			gallery_count = 0;
+		} else if (down & KEY_A) {
+			gallery_detail = 1;
+		} else if (down & KEY_DLEFT) {
+			if (gallery_cursor > 0) --gallery_cursor;
+		} else if (down & KEY_DRIGHT) {
+			if (gallery_cursor + 1 < gallery_count) ++gallery_cursor;
+		} else if (down & KEY_DUP) {
+			if (gallery_cursor >= 3) gallery_cursor -= 3;
+		} else if (down & KEY_DDOWN) {
+			if (gallery_cursor + 3 < gallery_count) gallery_cursor += 3;
+		} else if ((down & KEY_L) && gallery_cursor >= GALLERY_PAGE_SIZE) {
+			gallery_cursor -= GALLERY_PAGE_SIZE;
+		} else if ((down & KEY_R) && gallery_cursor + GALLERY_PAGE_SIZE < gallery_count) {
+			gallery_cursor += GALLERY_PAGE_SIZE;
+		}
+		fast_forward = 0;
+		return;
+	}
+	if (extras_mode && (down & (KEY_B | KEY_X | KEY_SELECT))) {
+		return_to_title();
+		return;
+	}
 	if (waiting == PLAY_VIDEO) {
 		fast_forward = 0;
 		update_video(dt, down);
@@ -2342,6 +2860,7 @@ static void handle_play_input(u32 down, u32 held, float dt)
 	case PLAY_NONE:
 	case PLAY_END:
 	case PLAY_VIDEO:
+	case PLAY_GALLERY:
 		break;
 	}
 }
@@ -2409,7 +2928,17 @@ int main(void)
 			}
 		} else if (mode == MODE_ERROR) {
 			if (down & KEY_B) {
-				leave_game();
+				if (extras_mode) {
+					return_to_title();
+				} else {
+					leave_game();
+				}
+			}
+		} else if (mode == MODE_TITLE) {
+			if (panel != PANEL_NONE) {
+				handle_panel_input(down, repeat);
+			} else {
+				handle_title_input(down, repeat);
 			}
 		} else {
 			fast_forward = fast_forward && panel == PANEL_NONE;

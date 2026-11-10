@@ -57,6 +57,9 @@ at source `p`/`pg` waits. Set `nvl_accumulate 1` in the output game's
 the original single-event preview behavior is retained. The converter still
 approximates inline waits and other unsupported tags, which can create extra
 dialogue stops; it does not yet distinguish line and page wait indicators.
+Images that would exceed the 3DS texture limit are reported and omitted in
+preview mode rather than aborting the whole conversion. Supported partial
+background crops can still be made from an oversized source.
 
 ### Extracting original-size images
 
@@ -86,6 +89,121 @@ including full-resolution opening images. As with `bg.xp3`, some `.png`
 entries actually contain WebP and must be decoded to real PNGs. Its `fg.xp3`
 still did not extract successfully. The ZIP-format `patch2.xp3` also contained
 some usable JPEGs. Verify your own files and keep all game assets private.
+
+### Local Mahoyo opening audio
+
+A separate local copy under `../mahoyo/` has readable `bgm.xp3` and
+`sound.xp3` indexes. The versions under `witch on the holy night/` failed
+earlier extraction attempts; identical archive sizes do not imply identical
+contents. With the separately installed arc_unpacker, the readable archives
+can be extracted locally into two new directories:
+
+```sh
+arc_unpacker --dec=kirikiri/xp3 --plugin=noop --threads=1 --no-recurse \
+  --out=NEW_BGM_DIRECTORY "/path/to/mahoyo/bgm.xp3"
+arc_unpacker --dec=kirikiri/xp3 --plugin=noop --threads=1 --no-recurse \
+  --out=NEW_SOUND_DIRECTORY "/path/to/mahoyo/sound.xp3"
+```
+
+Verify the extracted files: in this copy, audio entries named `.ogg` or
+`.wav` actually contain AAC in MP4 containers. FFmpeg detects the contents
+and the importer converts referenced tracks to 3DVN WAV files. Combine the
+extracted audio with decoded opening images in a separate input directory,
+checking for filename collisions, then run the importer with `--assets`.
+Keep extracted commercial assets private.
+
+`games/mahoyo-audio-preview` is a new local two-scene preview built from
+`1-0.ks` and `1-1.ks` with the original NVL theme and recovered music and
+sound effects. It contains 24 audio events and 15 referenced WAVs. It stops
+before the `opening.ks` interlude and does not interpret the route
+chart, and approximates or omits audio fades, delays, looping metadata, and
+other effects. See its conversion report; it is not a full playable game.
+Existing previews and saves are unchanged.
+
+`games/mahoyo-chapter1-preview` is a separate, incomplete preview of
+`1-2.ks` through `1-5.ks`, ordered according to the chart, with recovered
+music and sound effects. It begins after the opening timeline, which has not
+been converted, and it does not connect to the earlier preview or continue
+to Chapter 2. Many foregrounds, effects, and transitions are omitted or
+approximated; inspect its conversion report before using it. It is not a
+faithful or fully playable conversion.
+
+`games/mahoyo-through-chapter2` joins the opening scenes and Chapter 1 to a
+new Chapter 2 diagnostic preview (`2-1.ks` through `2-5.ks`). The opening
+timeline and the chapter-break menu are skipped with notices. Foregrounds,
+effects, timing, and some images remain missing or approximate; it has not
+been tested on a 3DS or emulator. See its conversion report.
+
+`games/mahoyo-main-story-diagnostic` extends that approach across all 120
+patch scenes on the chart's main path, through `d-9.ks`. It omits the opening
+timeline and 13 chapter-break interludes and does not include bonus content.
+The report lists 55,679 issues, including missing images, unsupported
+foregrounds and effects, and approximated timing. Chart order alone does not
+prove that every scene's dialogue or behavior was converted correctly.
+It is a large local diagnostic (about 818 MiB), not a finished game, and its
+memory use and playback have not been tested on a 3DS or emulator.
+
+To build a new chart-ordered diagnostic from local assets, use:
+
+```sh
+python3 tools/build_mahoyo_story_preview.py \
+  "witch on the holy night/data.xp3" "witch on the holy night/patch.xp3" \
+  games/mahoyo-new-preview --assets /path/to/decoded-assets \
+  --theme games/mahoyo-nvl-pages
+```
+
+The output directory must be new. The builder checks that chart tracing
+reaches its end, retains the chart's scene order, and places notices where the
+unconverted `opening.ks` and `teatime.ks` occur. It requires the extracted
+images and audio to be available as uniquely named files in the asset
+directory, and uses the existing theme's `game.3vc` and `ui` directory. It
+does not interpret scene calls or make unsupported effects faithful; check the
+generated report. Use `--entry` to select a different ZIP chart entry, or
+pass an extracted chart directly. Keep commercial assets private.
+
+`games/mahoyo-charted-preview` was built with this tool using the same local
+assets as the previous diagnostic. It retains the same visual and audio
+limitations but places notices at the omitted opening and each chapter break.
+Its full script compiles on the host; playback on a 3DS or emulator remains
+untested.
+
+`games/mahoyo-recovered-preview` is another separately built diagnostic with
+five exact-name images recovered from the local patch archive. Compared with
+the previous charted preview, its report contains 669 rather than 698 missing
+image references. It has the same major presentation limitations and has not
+been tested on a 3DS or emulator; prior previews and saves are unchanged.
+
+Some foreground images have been recovered as TLG files. The separate
+`tools/decode_kirikiri_tlg.py` utility can decode selected files locally;
+see `tools/README_decode_kirikiri_tlg.md`. Decoding does not reproduce the
+game's layer placement or animation, and those foregrounds are not yet
+integrated into the Chapter 1 preview.
+
+The local Mahoyo chart can be inspected with `tools/inspect_mahoyo_chart.py`.
+For a ZIP-format archive containing both chart entries, choose the main chart:
+
+```sh
+python3 tools/inspect_mahoyo_chart.py "witch on the holy night/data.xp3" \
+  --entry others/main.gc --initial-playthrough
+```
+
+For a genuine XP3 archive, extract it locally with
+`arc_unpacker --dec=kirikiri/xp3 --plugin=noop --threads=1 --no-recurse -o DIR data.xp3`
+(the file is `others/main.gc`, KiriKiri zlib-packed UTF-16). The default ZIP
+entry is `override/main.gc`; `--entry` selects an alternative. The tool parses
+chart literals without executing TJS. By default it traces only unambiguous flow and
+dumps the whole chart; `--initial-playthrough` prints just a fresh-game trace.
+
+That trace follows the original tracer's `next()` logic (read from the game's
+own `tracerplugin.tjs`): apply the block's flag operation, then follow the
+route. It interprets only `name=N`, `name+=N` and `name=name<N?N:name`
+operations and stops on multiple routes, conditions, choices, or unknown fields. For the
+local game it reaches the end without any stop: 72 chart blocks, 134 scene
+entries (121 distinct story scenes plus 13 `teatime.ks` interludes) from
+`1-0.ks` to `d-9.ks`, with no player choices. Choices exist only in the
+separate `wik_*` bonus page. The order, including `opening.ks` between `1-1.ks`
+and `1-2.ks`, is chart order only; it does not verify the scene scripts, and
+extras (`1.5-*`, `7-ex`, `8-ex`, `8.5`, `nz*`, `sp*`) are not on this path.
 
 The local `games/mahoyo-animated` preview uses the extracted `txtwindow01.png`
 message frame, resized to 384x224. The original `override/config.tjs` selects
@@ -212,5 +330,75 @@ Scripts with a UTF-16 BOM and UTF-8 scripts are detected; use
   full-resolution images, but audio, image positioning, game-specific
   layering and effects have not all been recovered or converted.
 
+### Experimental Mahoyo foreground composition
+
+`@fg`, `@chgfg`, `@movefg` and `@clfg` are implemented by the game's own
+`fgplugin.tjs`. In scenes 1-0 to 1-5 they total about 530 `fg`, 56 `chgfg`, 9
+`movefg` and 2 `clfg` calls. Their result depends on the back/fore page and
+implicit `backlay`, the later `@trans`, layer `index`, per-call effects (`type`,
+`effect`, blur, zoom, rotate, contrast), `partbg` targets and `|variant`
+character images, and many calls build several layers at once. By default
+these tags remain unsupported.
+
+An opt-in `--compose-foreground` mode uses full-resolution `--assets` and
+`--source-size` to flatten a limited subset into static backgrounds. It
+models plain `fg` layers with literal center, vcenter, index, opacity and
+positive zoom, `clfg`/`clall`, and selected back-page transitions. Positioning,
+fade timing and page behavior are approximations, and each emitted
+composition is reported. It is not a general KiriKiri layer renderer.
+Effects, blur, rotation, blend types, `chgfg`, `movefg`, animations, TLG
+sprite variants, unknown bases, equal-index ordering, and many other cases
+remain unsupported and are reported. Do not use thumbnail assets with this
+mode. A Chapter 1 test using the current local asset set emitted only one
+composite; character sprites still require their original placement metadata.
+
 Convert only files you are authorized to use. The tool does not include game
 assets or distribute converted game content.
+
+## Mahoyo opening timeline (inspection only)
+
+`scenario/opening.ks` in the local `data.xp3` (a ZIP) is not a video. It plays a
+serialized Kirikiri timeline (`@playtimeline scene=4`, or `scene=7` when
+`cf.speffect` is false, with `next=197250`) of layer, BG, BGM and SE objects.
+No movie file exists in the local archives' ZIP indexes. Summarize it with:
+
+```sh
+python3 tools/inspect_mahoyo_opening_timeline.py "path/to/data.xp3" [--json]
+```
+
+The tool reports objects, keyframe counts/time ranges and candidate image
+names inferred from an unverified keyframe offset. It does not render, decode
+easing or layer semantics, or produce a
+`.3vv`; a faithful opening needs a renderer for these keyframes or a screen
+capture from the game itself, which `tools/mk3vv.py` can then convert.
+
+## Recovering exact-name missing images
+
+`tools/recover_mahoyo_missing_images.py` scans a conversion report and local
+image directories or ZIP-format archives for exact, case-insensitive asset
+stems. It copies supported PNG/JPEG/BMP images and uses the separate
+`tools/decode_kirikiri_tlg.py` utility for matching TLG files. It does not
+guess aliases or extract proprietary XP3 archives. Ambiguous names are listed
+and skipped; unmatched names are preserved in `recovery-report.txt`.
+
+For the local main-story diagnostic, the `patch2.xp3` ZIP contains five exact
+matches among the 245 normalized missing asset stems. To recover them without
+changing the existing diagnostic or source archive:
+
+```sh
+python3 tools/recover_mahoyo_missing_images.py \
+  games/mahoyo-main-story-diagnostic/conversion-report.txt \
+  games/mahoyo-main-story-recovered-assets \
+  --source "witch on the holy night/patch2.xp3" \
+  --decoder /path/to/arc_unpacker
+```
+
+The current recovery produces five original-size assets (one `bg` image, two
+`ev` event images and two `im` images), covering 29 of 698 missing-image
+report occurrences. The report contains 246 distinct raw storage strings;
+two share an importer-normalized stem, leaving 245 unique lookup names. The
+other 240 names have no exact match in this archive, and no names were
+ambiguous. The output is a separate asset directory with its own
+`recovery-report.txt`; recovered images are not integrated into or used to
+rewrite the diagnostic preview. Keep archives and recovered commercial
+content local.

@@ -34,6 +34,7 @@ static const NumberKey number_keys[NUM_COUNT] = {
 	{"advance_frames", 1, 1, 128}, {"advance_frame_ms", 100, 1, 10000},
 	{"advance_scale", 100, 10, 400},
 	{"nvl_accumulate", 0, 0, 1},
+	{"face_box", 0, 0, 1},
 };
 
 void config_defaults(GameConfig *config)
@@ -45,6 +46,10 @@ void config_defaults(GameConfig *config)
 	for (int index = 0; index < LABEL_COUNT; ++index) {
 		strcpy(config->labels[index], default_labels[index]);
 	}
+	strcpy(config->title_start, "Start");
+	strcpy(config->title_load, "Load");
+	strcpy(config->title_options, "Options");
+	strcpy(config->title_extras, "Extras");
 }
 
 static void copy_text(char *out, size_t size, const char *text, size_t length)
@@ -132,6 +137,16 @@ void config_parse(const char *source, GameConfig *config)
 			copy_text(config->font, sizeof(config->font), value, strlen(value));
 		} else if (strcmp(key, "menu_title") == 0) {
 			copy_text(config->menu_title, sizeof(config->menu_title), value, strlen(value));
+		} else if (strcmp(key, "title") == 0) {
+			copy_text(config->title, sizeof(config->title), value, strlen(value));
+		} else if (strcmp(key, "title_start") == 0) {
+			copy_text(config->title_start, sizeof(config->title_start), value, strlen(value));
+		} else if (strcmp(key, "title_load") == 0) {
+			copy_text(config->title_load, sizeof(config->title_load), value, strlen(value));
+		} else if (strcmp(key, "title_options") == 0) {
+			copy_text(config->title_options, sizeof(config->title_options), value, strlen(value));
+		} else if (strcmp(key, "title_extras") == 0) {
+			copy_text(config->title_extras, sizeof(config->title_extras), value, strlen(value));
 		} else if (strcmp(key, "default_display") == 0) {
 			if (strcmp(value, "nvl") == 0) config->default_nvl = 1;
 			else if (strcmp(value, "adv") == 0) config->default_nvl = 0;

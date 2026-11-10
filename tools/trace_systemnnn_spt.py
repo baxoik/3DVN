@@ -169,10 +169,12 @@ def trace(report, start_word, choices=(), max_steps=1000, variables=None):
         elif kind == "goto":
             event.update(kind=kind, target_word=record["target_word"])
             next_pc = record["target_word"]
-        elif kind in ("story_name", "film_name"):
+        elif kind in ("story_name", "film_name", "voice"):
             event.update(kind=kind, string_index=record["string_index"])
             if "name" in record:
                 event["name"] = record["name"]
+            if "voice_name" in record:
+                event["voice_name"] = record["voice_name"]
             elif "encoding_error" in record:
                 event["encoding_error"] = record["encoding_error"]
         elif category == SYSTEM_FUNCTION and opcode == FILM_TYPE_TIME:

@@ -59,6 +59,8 @@ yet been traced.
 In `01.spt`, some text pointers lie outside their table record's declared
 extent despite remaining within the file; the diagnostic reports this
 instead of assuming those record lengths define the text data bounds.
+Observed voice commands may use `0xffffffff` as a no-voice sentinel; the
+reader preserves that marker without resolving it as a string-table index.
 
 ## Tracing a bounded path
 
@@ -109,12 +111,47 @@ playable yet.
 ## Text rendering investigation
 
 The original PRINT instruction carries a message-table index and a message
-serial, not an explicit speaker name. `op1.spt` word 1411 is a candidate
-dialogue message with a CRLF and a separate following ENDKOMA instruction;
-the bounded tracer cannot yet reach it from the opening. It is not safe to
-assume that each CRLF is a speaker separator or a page advance, or to infer
-the name from the nearby voice command. Inline command, speaker, and wait
-semantics need further verification before producing a playable preview.
+serial, not an explicit speaker name. `op1.spt` word 1411 contains a two-line
+message and follows the voice reference at word 1405. The bounded tracer
+cannot yet reach this dialogue from the opening. The preview below treats
+the first text line as a speaker label and the second as dialogue solely as
+a clearly marked approximation; original speaker/window and wait semantics
+remain unverified.
+
+## Building an opening excerpt
+
+The local opening assets support a small playable excerpt after the original
+montage, rather than a complete opening conversion. Extract the associated
+voice and background to new directories first:
+
+```sh
+python3 tools/extract_systemnnn_images.py gss-opening-extracted/bg0 \
+  gss/dwq/bg0.gpk --entry bg020300hy
+python3 tools/extract_systemnnn_voice.py gss-opening-extracted/voices \
+  --archive gss/cdvaw/qq.vpk --archive gss/cdvaw/yk.vpk --name yk180001
+python3 tools/build_systemnnn_opening_preview.py
+```
+
+The builder creates `games/gss-opening-preview` and refuses to overwrite an
+existing directory. It verifies the voice/message references at `op1.spt`
+words 1405/1411, uses the game-specific SJIS extension table, scales the
+background to 400×240, and copies the decoded 32 kHz voice. The resulting
+3DVN script presents the identified speaker and dialogue, then offers replay
+or finish controls. These controls are preview UI, not original choices.
+
+The excerpt starts after the opening montage. It does not reproduce the
+original animated effects, music/loop arrangement, timing, complete story
+path, or exact speaker-window behavior. The game archive has the park
+background used at this point, but other referenced assets were absent from
+the local archives. Inspect `games/gss-opening-preview/PREVIEW.txt` before
+testing; this output contains commercial game assets and should remain
+private.
+
+The 45 focused System-NNN tests pass. The generated script compiles and the
+engine VM emits background, voice, dialogue, both choices, and an end event
+for the finish choice. The background was verified as a 400×240 JPEG and the
+voice as mono 16-bit, 32 kHz PCM. Playback in Azahar or on 3DS hardware has
+not been verified.
 
 ## Converting WGQ music
 
@@ -158,9 +195,10 @@ verified; keep extracted assets private.
 
 ## Still needed
 
-Execution and conversion of script control flow, branches and choices,
-text control codes, remaining graphic formats, sound effects, voices, and
-source-specific timing are not yet implemented. The original engine may
-use audio loop points; WAV music in
+General conversion of script control flow and original choices, text control
+codes, remaining graphic formats, sound effects, and source-specific timing
+is not implemented. The bounded voice extractor and single-line preview are
+not general source-voice playback support. The original engine may use audio
+loop points; WAV music in
 3DVN currently loops the entire track. Full image and audio archive support
 has not yet been verified for this game.

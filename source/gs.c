@@ -154,7 +154,8 @@ int gs_bgloop_decode_optional(GsBgLoop *loop, const unsigned char *data, size_t 
 
 typedef enum {
 	OP_SAY, OP_BG, OP_SHOW, OP_HIDE, OP_MUSIC, OP_SFX, OP_VIDEO, OP_WAIT, OP_SET,
-	OP_JUMP, OP_JUMPF, OP_CALL, OP_RET, OP_END, OP_MENU, OP_BGLOOP, OP_WAITBG, OP_PAGE
+	OP_JUMP, OP_JUMPF, OP_CALL, OP_RET, OP_END, OP_MENU, OP_BGLOOP, OP_WAITBG,
+	OP_PAGE, OP_SCRIPT, OP_EFFECT, OP_GALLERY
 } Op;
 
 typedef struct {
@@ -301,6 +302,12 @@ static int set_var(GsState *state, const char *name, const GsValue *value)
 static int is_truthy(const GsValue *value)
 {
 	return value->is_str ? value->str[0] != '\0' : value->num != 0;
+}
+
+const char *gs_variable_text(const GsState *state, const char *name)
+{
+	const GsValue *value = find_var(state, name);
+	return value != NULL && value->is_str ? value->str : NULL;
 }
 
 int gs_variable_truthy(const GsState *state, const char *name)
@@ -1020,6 +1027,60 @@ static int compile_line(Compiler *compiler, const char *line)
 		return 0;
 	}
 
+	if (is_word(&tokens[0], "gallery")) {
+		if (count != 1) return fail(compiler, "usage: gallery%s", "");
+		return emit(compiler, OP_GALLERY) < 0 ? -1 : 0;
+	}
+
+	if (is_word(&tokens[0], "camera")) {
+		const char *angle = "c";
+		float seconds = 0.5f;
+		int small = 0;
+		for (int i = 1; i < count; ++i) {
+			if (!strcmp(tokens[i].text, "small")) small = 1;
+			else if (!strcmp(tokens[i].text, "l") || !strcmp(tokens[i].text, "c")
+				|| !strcmp(tokens[i].text, "r") || !strcmp(tokens[i].text, "d")) angle = tokens[i].text;
+			else if (isdigit((unsigned char)tokens[i].text[0]) || tokens[i].text[0] == '.')
+				seconds = (float)atof(tokens[i].text);
+			else return fail(compiler, "usage: camera [l|c|r|d] [SECONDS] [small]%s", "");
+		}
+		int index = emit(compiler, OP_EFFECT);
+		if (index < 0) return -1;
+		program->code[index].a = dup_string("camera");
+		program->code[index].b = dup_string(angle);
+		program->code[index].c = dup_string(small ? "small" : "");
+		program->code[index].seconds = seconds;
+		return 0;
+	}
+
+	if (is_word(&tokens[0], "hop")) {
+		if (count != 2) return fail(compiler, "usage: hop ID%s", "");
+		int index = emit(compiler, OP_EFFECT);
+		if (index < 0) return -1;
+		program->code[index].a = dup_string("hop");
+		program->code[index].b = dup_string(tokens[1].text);
+		program->code[index].c = dup_string("");
+		program->code[index].seconds = 0.35f;
+		return 0;
+	}
+
+	if (is_word(&tokens[0], "shake") || is_word(&tokens[0], "flash")) {
+		int shake = is_word(&tokens[0], "shake");
+		if (count < 2 || count > 3) {
+			return fail(compiler, "usage: shake SECONDS [PIXELS] | flash SECONDS [white|black]%s", "");
+		}
+		if (!shake && count == 3 && strcmp(tokens[2].text, "white") && strcmp(tokens[2].text, "black")) {
+			return fail(compiler, "flash color must be white or black%s", "");
+		}
+		int index = emit(compiler, OP_EFFECT);
+		if (index < 0) return -1;
+		program->code[index].a = dup_string(shake ? "shake" : "flash");
+		program->code[index].b = dup_string(count == 3 ? tokens[2].text : (shake ? "6" : "white"));
+		program->code[index].c = dup_string("");
+		program->code[index].seconds = (float)atof(tokens[1].text);
+		return 0;
+	}
+
 	if (is_word(&tokens[0], "waitbg")) {
 		if (count > 2 || (count == 2 && !is_word(&tokens[1], "skippable")))
 			return fail(compiler, "usage: waitbg [skippable]%s", "");
@@ -1091,6 +1152,18 @@ static int compile_line(Compiler *compiler, const char *line)
 			return fail(compiler, "usage: %s LABEL", tokens[0].text);
 		}
 		int index = emit(compiler, tokens[0].text[0] == 'j' ? OP_JUMP : OP_CALL);
+		if (index < 0) {
+			return -1;
+		}
+		program->code[index].a = dup_string(tokens[1].text);
+		return 0;
+	}
+
+	if (is_word(&tokens[0], "script")) {
+		if (count != 2 || !tokens[1].text[0]) {
+			return fail(compiler, "usage: %s FILE", "script");
+		}
+		int index = emit(compiler, OP_SCRIPT);
 		if (index < 0) {
 			return -1;
 		}
@@ -1486,6 +1559,13 @@ void gs_next(const GsProgram *program, GsState *state, GsEvent *event)
 			event->type = GS_EV_WAIT;
 			event->seconds = instr->seconds;
 			return;
+		case OP_EFFECT:
+			event->type = GS_EV_EFFECT;
+			snprintf(event->asset, sizeof(event->asset), "%s", instr->a);
+			snprintf(event->pos, sizeof(event->pos), "%s", instr->b);
+			snprintf(event->text, sizeof(event->text), "%s", instr->c);
+			event->seconds = instr->seconds;
+			return;
 		case OP_WAITBG:
 			event->type = GS_EV_WAITBG;
 			event->seconds = instr->seconds;
@@ -1531,6 +1611,21 @@ void gs_next(const GsProgram *program, GsState *state, GsEvent *event)
 			}
 			state->pc = state->call_stack[--state->call_depth];
 			break;
+		case OP_SCRIPT: {
+			GsValue value = make_string(instr->a);
+			if (!set_var(state, "_script", &value)) {
+				runtime_error(event, instr->line, "too many variables");
+				return;
+			}
+			event->type = GS_EV_SCRIPT;
+			copy_text(event->asset, sizeof(event->asset), instr->a);
+			state->pc = 0;
+			state->call_depth = 0;
+			return;
+		}
+		case OP_GALLERY:
+			event->type = GS_EV_GALLERY;
+			return;
 		case OP_END:
 			event->type = GS_EV_END;
 			state->pc = program->code_count;

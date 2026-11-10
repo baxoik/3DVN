@@ -63,7 +63,9 @@ Put each game in its own folder under:
 
 Try the demo by copying the repository's games/demo folder to
 sd:/3ds/3dvn/games/demo. Launch 3DVN, pick the game from the list on the
-bottom screen (D-pad + A, or tap it).
+bottom screen (D-pad + A, or tap it), then choose Start from its title menu.
+The title menu also provides Load, Options, and (when extras.3vs is present)
+Extras. B from a game's title menu returns to the game list.
 
 Sound requires the DSP firmware dump (sd:/3ds/dspfirm.cdc), which you can
 create with the DSP1 homebrew tool. Without it, the game still runs but
@@ -75,9 +77,11 @@ silently, and a notice is shown.
 ------------------------------------------------------------------------------
     <GAMENAME>/
         main.3vs            Script (required). Entry point of the game.
+        extras.3vs          Optional title-menu extras script (section 8.4).
         bg/NAME.png|jpg     Backgrounds. Ideally 400x240 (the top screen).
         sprites/NAME.png    Character sprites. Transparent PNG, <= 1024x1024.
         audio/NAME.wav      Music and sound effects.
+        gallery/thumbs/     Optional CG gallery thumbnails (see section 6.10c).
         game.3vc            Menu appearance and labels (optional, section 8.4).
         glossary.3vg        Glossary terms (optional, section 8.5).
         ui/NAME.png|jpg     UI artwork referenced by game.3vc (optional).
@@ -227,6 +231,23 @@ blocks. Words are separated by spaces; text containing spaces goes in
   the new loop starts after the fade completes. Transition duration must be
   0..600 seconds. Without it, the background changes immediately.
 
+    shake SECONDS [PIXELS]
+    flash SECONDS [white|black]
+  Screen effects that do not wait; the script continues immediately.
+  shake jolts the background and sprites (not the text box), easing out
+  over SECONDS; PIXELS is the starting amplitude (default 6). flash covers
+  the scene with white (default) or black and fades it out over SECONDS.
+  Effects are not saved; loading a save starts with none active.
+
+    camera [l|c|r|d] [SECONDS] [small]
+  Pans and zooms the background and sprites toward the left, right or
+  bottom (c or no angle returns to normal) over SECONDS (default 0.5).
+  small is a gentler version. It stays in effect until the next camera
+  command, is not saved, and does not affect the text box.
+
+    hop ID
+  Makes the sprite shown as ID bounce briefly. Does nothing if absent.
+
     waitbg [skippable]
   Waits for the current background fade to finish, or continues immediately
   if none is running. With skippable, A or fast-forward completes it early.
@@ -253,6 +274,9 @@ blocks. Words are separated by spaces; text containing spaces goes in
     show mira at 120 20
     show mira mira_smile at right
     hide mira fade 0.5
+  Special position "face" (show face portrait at face) draws the sprite as a
+  speaker portrait just above the top-left corner of the ADV text box, fixed
+  on screen (not moved by camera or shake) and hidden in NVL mode.
 
 6.4b Splitting a script across files
     include FILE
@@ -314,13 +338,17 @@ blocks. Words are separated by spaces; text containing spaces goes in
     jump NAME            Continue at the label.
     call NAME            Run from the label; "return" comes back here.
     return               Return from a "call".
+    script FILE          Switch to FILE.3vs inside the game folder.
     stop                 End the story.
   Calls may nest up to 32 deep. Reaching the end of the file ends the story.
+  `script` keeps variables and the current scene state, but starts the target
+  file from its first line with an empty call stack.
 
 6.10 Audio commands
     music NAME [fade SECONDS]      Loop audio/NAME.wav as background music.
     music stop [fade SECONDS]
     sfx NAME                       Play audio/NAME.wav once.
+    sfx stop                       Silences all playing sound effects (music keeps playing).
 
 6.10b Video command
     video NAME [noskip]            Play video/NAME.3vv full screen on the top
@@ -328,6 +356,16 @@ blocks. Words are separated by spaces; text containing spaces goes in
                                    it with A unless "noskip" is given. If the
                                    video is missing or damaged a notice is
                                    shown and the script carries on.
+
+6.10c CG gallery
+                                     gallery
+                                   Opens a paged thumbnail gallery using image files in gallery/thumbs/.
+                                   Each thumbnail must have the same base name as its full-size CG in bg/.
+                                   D-pad moves through the grid, A opens the selected CG, and left/right
+                                   browses while viewing it. A returns to the grid; B returns to the script.
+                                   L/R changes gallery pages. The viewer loads only the visible thumbnails
+                                   and current full-size CG, keeping texture use bounded. An empty or missing
+                                   thumbnail folder is reported as an error.
 
 6.11 Complete example
     character mira "Mira" #e87890
@@ -442,7 +480,13 @@ transparent PNG gives rounded corners and so on). Colors are #RRGGBB.
 Numbers outside the allowed range are ignored.
 
 General
+    title       TEXT        Novel title shown in its title menu
     menu_title  TEXT        Title at the top of the menu
+    title_start TEXT        Title-menu Start label [Start]
+    title_load  TEXT        Title-menu Load label [Load]
+    title_options TEXT      Title-menu Options label [Options]
+    title_extras TEXT       Title-menu Extras label [Extras]
+                            (up to 31 characters each)
     default_display adv|nvl  Initial display style when no preference is saved
     accent      #RRGGBB     Highlights, titles, default speaker-name color
     panel       #RRGGBB     Box / button color when no image is given
@@ -453,8 +497,18 @@ General
     label_save, label_load, label_backlog, label_glossary, label_options, label_quit
                             Rename the menu entries (up to 31 characters)
 
+Every game opens at its title menu before main.3vs runs. Start begins the
+story from the beginning. Load opens that game's 15 save slots; only a valid
+save for the current script can be loaded. Options opens the game's display
+preferences. Extras appears only when extras.3vs exists in the game folder.
+That file is a normal 3DVN script, so its menus can branch to gallery scenes,
+play audio, or launch videos. `stop` at the end returns to the title menu;
+pressing B, X, or SELECT during extras also returns there. Extras cannot be
+saved. The demo game includes a small example extras script.
+
 Images (full-screen ones are shown at their own size, centered)
-    menu_bg      Top-screen backdrop for the menu, save/load, glossary (400x240)
+    menu_bg      Top-screen backdrop for title/in-game menus, save/load,
+                 glossary (400x240)
     backlog_bg   Top-screen backdrop for the backlog (400x240)
     bottom_bg    Bottom-screen background (320x240), stretched to fit
     textbox_img  Dialogue box          namebox_img   Speaker name plate
@@ -477,6 +531,11 @@ Dialogue box (pixels on the 400x240 top screen; defaults in brackets)
     namebox_x [0] namebox_y [-22]
                            Where the name plate image goes (its own size),
                            relative to the box; drawn only when someone speaks
+    face_box [0]           1: draw `at face` sprites over the ADV box's left
+                           edge, bottom-aligned; move names and dialogue to
+                           the right while visible. Portraits are scaled down
+                           if needed. 0: keep the original position above the
+                           box. Applies only when the custom box is selected.
     nvl_dim [155]          Scene dimming opacity, 0-255
     nvl_border [1]         Draw the engine border: 1 yes, 0 no
     nvl_margin_x [12]      Left/right text inset, 0-180 pixels
@@ -498,6 +557,33 @@ indicator, dialogue is wrapped using the engine's word-wrapper so the icon
 can follow the visible text; wrapping may differ slightly from other themes.
 The Mahoyo preview uses the original line-wait icon for every dialogue stop;
 the converter does not yet distinguish original line and page wait glyphs.
+
+The local Mahoyo audio preview uses separately extracted music and sound
+effects from a readable copy of the game's archives. It is an incomplete
+two-scene diagnostic preview, not a full conversion. See
+tools/README_import_kirikiri.md for extraction and known limitations.
+The separate Mahoyo Chapter 1 preview covers scenes after the opening
+timeline; the timeline and many foreground effects are not yet converted.
+The Mahoyo through-Chapter-2 diagnostic joins the earlier scenes and adds
+Chapter 2; it skips the opening timeline and chapter-break menu and is not
+a faithful conversion. See its conversion report for unresolved effects.
+The separate Mahoyo main-story diagnostic includes chart-ordered scenes
+through the ending, but omits the opening timeline and chapter interludes.
+It has many unresolved visuals and effects and is not device-tested.
+tools/build_mahoyo_story_preview.py rebuilds this kind of diagnostic from
+the local chart, extracted assets and an existing NVL theme; see
+tools/README_import_kirikiri.md. Commercial assets are not included.
+The experimental KiriKiri importer can optionally flatten a limited subset
+of Mahoyo foreground layers; the default remains unchanged and most sprite
+and animation behavior is still unsupported. Exact-name image recovery and
+the opening timeline inspector are also documented in that README.
+
+The G-Senjou no Maou conversion includes generated `ui/textbox.png` and
+`ui/nvl_textbox.png` skins, configured by its `game.3vc`. The source archives
+do not contain the original message-window artwork, so the dark translucent
+panels are approximations based on a screenshot rather than extracted art.
+Replace the images or adjust the textbox/name positions and colors in
+`game.3vc` to customize the theme.
 
 Accumulating pages are tracked even in ADV so switching styles retains the
 page. Text that exceeds the screen scrolls to the newest visible lines; the
@@ -613,12 +699,22 @@ You can check a script on a PC without the 3DS (see Testing).
     tools/import_kirikiri.py
                           Experimental KiriKiri scene/sequence preview;
                           see tools/README_import_kirikiri.md for limitations.
+    tools/import_gsenjou.py
+                          Converts the translated G-Senjou KiriKiri scripts
+                          and assets into a playable 3DVN game folder.
+                          See tools/README_import_gsenjou.md.
     tools/extract_systemnnn_music.py
                           Extracts supported System-NNN WGQ music to WAV;
                           see tools/README_systemnnn.md for limitations.
     tools/extract_systemnnn_images.py
                           Extracts supported System-NNN GPK image resources;
                           see tools/README_systemnnn.md for limitations.
+    tools/extract_systemnnn_voice.py
+                          Extracts supported System-NNN VPK voice resources
+                          to PCM WAV; see tools/README_systemnnn.md.
+    tools/build_systemnnn_opening_preview.py
+                          Builds a limited playable GSS opening excerpt from
+                          local source/assets; not a full game converter.
     tools/inspect_systemnnn_spt.py
                           Inspects System-NNN SPT records and text references;
                           does not execute or convert story flow. See
@@ -655,6 +751,8 @@ On a PC with gcc:
         Language, state validation, word-wrap and config/glossary tests.
     gcc -o gscheck tests/check_scripts.c source/gs.c && ./gscheck games/demo/main.3vs
         Syntax-check scripts without a 3DS.
+    python3 -m unittest discover -s tests -p test_check_scripts.py
+        Verify the checker reads entire large scripts and included files.
     gcc -o vidcheck tests/test_vid.c source/vid.c -lm && ./vidcheck games/demo/video/clip.3vv
         Validate .3vv files and make sure every frame decodes.
     gcc -o wavcheck tests/test_wav.c source/wav.c && ./wavcheck games/demo/audio/*.wav
@@ -665,8 +763,8 @@ On a PC with gcc:
 13. ROADMAP
 ------------------------------------------------------------------------------
 Current focus: foreground, background, text, audio, choices and branching.
-Done: all of the above in basic form (WAV audio only), plus backlog,
-multiple save slots, in-game menu, glossary, UI theming and video.
+Done: all of the above in basic form (WAV audio only), plus title menus,
+backlog, multiple save slots, in-game menu, glossary, UI theming and video.
 
 Planned, near term:
     - Compressed audio (Ogg Vorbis)
@@ -692,6 +790,12 @@ Planned, long term - interactivity (Ace Attorney-style investigation):
 14. CHANGELOG
 ------------------------------------------------------------------------------
 Milestone 5 (current)
+    - New `script FILE` command for chapter-to-chapter handoff without
+      resetting variables or scene state. The converter uses this for long
+      multi-file stories.
+    - tools/import_gsenjou.py converts the local translated G-Senjou no Maou
+      script set into a playable 3DVN build with converted assets and a
+      conversion report of approximated/unsupported effects.
     - Game themes may set a default display style and custom NVL dim, border
       and text margins. The Mahoyo animated preview uses local original artwork.
     - Optional dedicated NVL textbox artwork; the demo includes an example.

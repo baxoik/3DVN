@@ -37,7 +37,7 @@ enum {
 	NUM_CHOICE_W, NUM_CHOICE_H, NUM_CHOICE_GAP, NUM_CHOICE_TEXT_X, NUM_CHOICE_SIZE, NUM_CHOICE_DIM,
 	NUM_NVL_DIM, NUM_NVL_BORDER, NUM_NVL_MARGIN_X, NUM_NVL_MARGIN_Y,
 	NUM_ADVANCE_FRAMES, NUM_ADVANCE_FRAME_MS, NUM_ADVANCE_SCALE,
-	NUM_NVL_ACCUMULATE,
+	NUM_NVL_ACCUMULATE, NUM_FACE_BOX,
 	NUM_COUNT
 };
 
@@ -47,6 +47,11 @@ typedef struct {
 	char images[IMG_COUNT][CFG_PATH_LEN];
 	int num[NUM_COUNT];
 	char font[CFG_PATH_LEN];
+	char title[CFG_TERM_LEN];
+	char title_start[CFG_LABEL_LEN];
+	char title_load[CFG_LABEL_LEN];
+	char title_options[CFG_LABEL_LEN];
+	char title_extras[CFG_LABEL_LEN];
 	char menu_title[CFG_TERM_LEN];
 	char labels[LABEL_COUNT][CFG_LABEL_LEN];
 	int default_nvl;

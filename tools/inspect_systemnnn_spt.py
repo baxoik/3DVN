@@ -14,6 +14,7 @@ SYSTEM_COMMAND = 0x66660006
 SYSTEM_FUNCTION = 0x66660007
 PRINTS = {0x22220001: "print", 0x22220002: "lprint", 0x22220003: "append"}
 NAMES = {0x33330050: "film_name", 0x33330051: "story_name"}
+VOICE = 0x33330008
 SELECT = 0x22220006
 GOTO = 0x55560020
 SCRIPT_CALL = 0x5556000A
@@ -175,6 +176,20 @@ def inspect_spt(raw, include_text=False, extension=None):
                 record["name"] = name
             elif "encoding_error" in name:
                 record["encoding_error"] = name["encoding_error"]
+        elif category == SYSTEM_FUNCTION and opcode == VOICE:
+            if len(operands) < 2:
+                raise ValueError(f"missing voice string index at word {pc}")
+            record.update(kind="voice", string_index=operands[1])
+            if operands[1] == 0xffffffff:
+                record["no_voice"] = True
+                if include_text:
+                    record["voice_name"] = None
+            else:
+                name = resolve(strings, operands[1], "string")
+                if include_text:
+                    record["voice_name"] = name
+                elif "encoding_error" in name:
+                    record["encoding_error"] = name["encoding_error"]
         elif category == CONTROL and opcode == BLOCK_OPEN:
             if not operands:
                 raise ValueError(f"missing block skip at word {pc}")

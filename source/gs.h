@@ -29,7 +29,10 @@ typedef enum {
 	GS_EV_VIDEO, /* asset = video name; seconds = 1 when the player may not skip it */
 	GS_EV_BGLOOP, /* asset = base; choices = overlays; seconds = hold; pos = loop fade; text = transition fade */
 	GS_EV_WAITBG, /* seconds = 1 if skippable */
-	GS_EV_PAGE /* clear the accumulated NVL page without waiting */
+	GS_EV_PAGE, /* clear the accumulated NVL page without waiting */
+	GS_EV_EFFECT, /* asset = "shake" or "flash"; seconds = duration; pos = "white"/"black" for flash; choice_count unused; text = amplitude in pixels */
+	GS_EV_SCRIPT, /* asset = script file to switch to; the VM is already reset to its start */
+	GS_EV_GALLERY /* open gallery viewer; B returns to script */
 } GsEventType;
 
 typedef struct {
@@ -83,6 +86,8 @@ void gs_free(GsProgram *program);
 void gs_state_init(const GsProgram *program, GsState *state);
 /* An unset variable is false; strings and numbers use script truthiness. */
 int gs_variable_truthy(const GsState *state, const char *name);
+/* Text of a string variable, or NULL when it is unset or numeric. */
+const char *gs_variable_text(const GsState *state, const char *name);
 
 /* Run until the next event. After a GS_EV_MENU, call gs_choose before gs_next. */
 void gs_next(const GsProgram *program, GsState *state, GsEvent *event);
