@@ -11,6 +11,8 @@ int audio_play_music(const char *path, float fade_seconds, char *err, int err_si
 void audio_stop_music(float fade_seconds);
 int audio_play_sfx(const char *path, char *err, int err_size);
 void audio_stop_sfx(void);
+/* 1 while any sound effect (including voice clips) is still playing. */
+int audio_sfx_playing(void);
 
 void audio_update(float dt);
 

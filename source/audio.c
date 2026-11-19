@@ -97,6 +97,21 @@ void audio_stop_sfx(void)
 	next_sfx = 0;
 }
 
+int audio_sfx_playing(void)
+{
+	if (!ready) {
+		return 0;
+	}
+	for (int index = 0; index < SFX_SLOTS; ++index) {
+		/* The buffer is QUEUED as soon as it is added, before the DSP reports the channel as playing. */
+		u8 status = sfx[index].buffer.status;
+		if (sfx[index].memory != NULL && (status == NDSP_WBUF_QUEUED || status == NDSP_WBUF_PLAYING)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 void audio_exit(void)
 {
 	if (!ready) {

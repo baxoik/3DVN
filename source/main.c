@@ -43,6 +43,10 @@ u32 __stacksize__ = 256 * 1024;
 #define LIST_ROWS 8
 #define FF_SPEED 8.0f
 #define FF_STEP 0.07f
+#define AUTO_DELAY_VOICED 0.5f    /* seconds after a voice clip ends */
+#define AUTO_DELAY_BASE 1.0f      /* unvoiced lines: base reading time ... */
+#define AUTO_DELAY_PER_CHAR 0.04f /* ... plus this per character */
+#define AUTO_DELAY_MAX 6.0f
 #define BACKLOG_MAX 40
 #define LOG_SCALE 0.45f
 #define LOG_WIDTH 372.0f
@@ -200,6 +204,10 @@ static Panel panel_return;
 static int ui_hidden;
 static int fast_forward;
 static float ff_wait;
+/* Auto mode: advance by itself once the line is shown and its voice has finished. */
+static int auto_mode;
+static float auto_wait;
+static int line_voiced;
 static char gallery_items[MAX_GALLERY_ITEMS][GS_STR_LEN];
 static int gallery_count, gallery_cursor, gallery_detail;
 
@@ -864,6 +872,8 @@ static void show_event(void)
 		waiting = PLAY_TEXT;
 		chars_shown = 0.0f;
 		advance_visible = 0;
+		auto_wait = 0.0f;
+		line_voiced = audio_sfx_playing();
 		break;
 	case GS_EV_MENU:
 		waiting = PLAY_MENU;
@@ -2304,15 +2314,19 @@ static void draw_top(C3D_RenderTarget *target)
 	}
 	if (fast_forward && panel == PANEL_NONE && waiting != PLAY_MENU && waiting != PLAY_END) {
 		draw_line(">> FAST FORWARD", 290, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
+	} else if (auto_mode && panel == PANEL_NONE && waiting != PLAY_END) {
+		draw_line("AUTO", 360, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
 	}
 }
 
 static const Button play_buttons[] = {
-	{14, 44, 142, 52, "Menu  (X)"},
-	{164, 44, 142, 52, "Backlog  (L)"},
-	{14, 104, 142, 52, "Hide text  (B)"},
-	{164, 104, 142, 52, "Quit  (SELECT)"},
+	{14, 34, 142, 42, "Menu  (X)"},
+	{164, 34, 142, 42, "Backlog  (L)"},
+	{14, 82, 142, 42, "Hide text  (B)"},
+	{164, 82, 142, 42, "Quit  (SELECT)"},
+	{14, 130, 292, 38, "Auto  (Y)"},
 };
+#define AUTO_BUTTON 4
 #define COUNT_OF(array) (int)(sizeof(array) / sizeof((array)[0]))
 
 static void draw_button_box(const Button *button, int selected)
@@ -2452,9 +2466,9 @@ static void draw_bottom(C3D_RenderTarget *target)
 
 	draw_line(game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
 	for (int index = 0; index < COUNT_OF(play_buttons); ++index) {
-		draw_button_box(&play_buttons[index], 0);
+		draw_button_box(&play_buttons[index], index == AUTO_BUTTON && auto_mode);
 	}
-	draw_line(waiting == PLAY_MENU ? "D-pad choose   A confirm" : "A next   Hold R fast-forward",
+	draw_line(waiting == PLAY_MENU ? "D-pad choose   A confirm" : "A next   Y auto   Hold R fast-forward",
 		14, 176, 0.42f, dim, Z_TEXT, 0.0f);
 	draw_line(ui_hidden ? "Text hidden - press B or A" : "START exit app", 14, 192, 0.42f, dim, Z_TEXT, 0.0f);
 	if (notice[0] != '\0') {
@@ -2468,6 +2482,7 @@ static void leave_game(void)
 {
 	extras_mode = 0;
 	extras_available = 0;
+	auto_mode = 0;
 	audio_stop_music(0.0f);
 	audio_stop_sfx();
 	scene.music[0] = '\0';
@@ -2773,13 +2788,23 @@ static void handle_play_input(u32 down, u32 held, float dt)
 		open_panel(PANEL_QUIT);
 		return;
 	}
+	if (down & KEY_Y) {
+		auto_mode = !auto_mode;
+		auto_wait = 0.0f;
+		return;
+	}
 	if (down & KEY_TOUCH) {
 		touchPosition touch;
 		hidTouchRead(&touch);
-		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT};
+		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT, PANEL_NONE};
 		int button = hit_button(play_buttons, COUNT_OF(play_buttons), &touch);
 		if (button == 2) {
 			ui_hidden = !ui_hidden;
+			return;
+		}
+		if (button == AUTO_BUTTON) {
+			auto_mode = !auto_mode;
+			auto_wait = 0.0f;
 			return;
 		}
 		if (button >= 0) {
@@ -2806,6 +2831,9 @@ static void handle_play_input(u32 down, u32 held, float dt)
 			total += ((unsigned char)*c & 0xC0) != 0x80;
 		}
 		chars_shown += TEXT_CHARS_PER_SEC * dt;
+		if (auto_mode && !line_voiced && audio_sfx_playing()) {
+			line_voiced = 1;
+		}
 		if (fast_forward) {
 			chars_shown = (float)total;
 			ff_wait += dt;
@@ -2820,6 +2848,22 @@ static void handle_play_input(u32 down, u32 held, float dt)
 			} else {
 				audio_stop_sfx();
 				waiting = PLAY_NONE;
+			}
+		} else if (auto_mode && chars_shown >= (float)total) {
+			if (audio_sfx_playing()) {
+				line_voiced = 1;
+				auto_wait = 0.0f;
+			} else {
+				/* Voiced lines go on shortly after the voice ends; others get reading time. */
+				float delay = line_voiced ? AUTO_DELAY_VOICED
+					: AUTO_DELAY_BASE + AUTO_DELAY_PER_CHAR * (float)total;
+				if (delay > AUTO_DELAY_MAX) {
+					delay = AUTO_DELAY_MAX;
+				}
+				auto_wait += dt;
+				if (auto_wait >= delay) {
+					waiting = PLAY_NONE;
+				}
 			}
 		}
 		break;
