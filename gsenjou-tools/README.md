@@ -64,6 +64,10 @@ out of git (see `.gitignore`).
      only remember a face; each line shows its speaker's remembered face (ADV
      mode only); `@clear_mface` forgets them all. Every background change and
      chapter start also hides all five sprite slots.
+   - `fix_leaked_commands.py` repairs KiriKiri commands that older imports left
+     in as dialogue: with adult scenes off, each H-scene showed "@return" and
+     friends as text and then played anyway. `@return` becomes `return` again,
+     `@fobgm` a music fade, and gallery jumps and comments are dropped.
    - `chapter_select.py` adds a nested chapter-select menu after the
      adult-scenes question. Each entry sets the story flags you'd have earned
      before that chapter, so jumping ahead doesn't trigger flag-gated bad endings.

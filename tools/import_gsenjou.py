@@ -594,7 +594,10 @@ class Converter:
                 if line.startswith("@endscript"):
                     state["skip"] = False
                 continue
-            if not line.strip() or line.startswith(";"):
+            # Commands and comments may be indented (e.g. inside an @if block); the
+            # indented ones used to come out as dialogue ("@return", "; note").
+            probe = line.lstrip(" \t")
+            if not line.strip() or probe.startswith(";"):
                 continue
             if state["menu"] and not line.startswith("@exlink") and not line.startswith("@showexlink"):
                 flush_menu()
@@ -607,8 +610,8 @@ class Converter:
                     state["face"] = "?"
                     state["slots"].clear()
                 continue
-            if line.startswith("@"):
-                parts = line[1:].split(None, 1)
+            if probe.startswith("@"):
+                parts = probe[1:].split(None, 1)
                 command = parts[0] if parts else ""
                 args = parse_args(parts[1] if len(parts) > 1 else "")
                 if command not in ("np", "r"):
