@@ -891,7 +891,8 @@ static const char *hbl_path(void)
 }
 
 /* Without Aroma's RPXLoader the app was started by the classic Homebrew Launcher
-   (Haxchi / CBHC / Mii Maker), and a normal exit returns there. */
+   (Haxchi / CBHC / Mii Maker). Like wut's WHBProc, relaunch the title it runs in, which
+   brings the launcher back; simply ending the app goes to the Wii U Menu instead. */
 int vn_wiiu_can_exit_to_hbl(void)
 {
 	return rpx_loader_launch() == NULL || hbl_path() != NULL;
@@ -899,7 +900,10 @@ int vn_wiiu_can_exit_to_hbl(void)
 
 int vn_wiiu_exit_to_hbl(void)
 {
-	if (rpx_loader_launch() == NULL) return 2;
+	if (rpx_loader_launch() == NULL) {
+		SYSRelaunchTitle(0, NULL);
+		return 1;
+	}
 	RLLaunchHomebrew launch = rpx_loader_launch();
 	const char *path = hbl_path();
 	return launch != NULL && path != NULL && launch(path) == 0 ? 1 : 0;
