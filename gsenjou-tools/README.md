@@ -81,14 +81,22 @@ out of git (see `.gitignore`).
 ## HD images for PC and Wii U (optional)
 
 The converted images are sized for the 3DS (backgrounds 320x240). With the game's
-original images decoded to PNG (any folder layout), `make_hd.py` builds `hd/`:
+original images decoded to PNG, `make_hd.py` builds `hd/`. `tools/decode_tlg.py`
+decodes the extracted `.tlg` files (TLG5, numpy + Pillow, no GARbro needed);
+`--compose` pastes expression layers onto their bodies using the `.pos` files:
 
 ```sh
-python3 gsenjou-tools/make_hd.py voiced/g-senjou-no-maou path/to/decoded-pngs
+python3 tools/decode_tlg.py decoded --compose \
+  --from extracted/bgimage --from extracted/evimage --from extracted/fgimage --from extracted/face
+python3 gsenjou-tools/make_hd.py voiced/g-senjou-no-maou decoded
 ```
 
-Each original is cropped like the small image and checked against it; mismatches and
-cut-ins are skipped. Then pack two archives: with `hd/` for PC / Wii U, and
+The 3DS images are scaled-down crops of the originals (other 4:3 framing for
+backgrounds, upper bodies of full-length sprites), so each one is located in its
+original by template matching over scale and position, and accepted only if the
+match correlates well. CGs whose 4:3 version shows more than the 16:9 original
+(zoomed-out compositions) and cut-ins keep their small image. With the Steam release
+about 1,770 images get HD versions (all sprites and faces, half the backgrounds). Then pack two archives: with `hd/` for PC / Wii U, and
 `--exclude hd` for the 3DS.
 
 ## Pack it (optional, recommended)

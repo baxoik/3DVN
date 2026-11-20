@@ -7,23 +7,26 @@ GAME_DIR     the converted game (bg/*.jpg 320x240, sprites/*.png at 0.4 scale)
 DECODED_DIR  the game's original images as PNG (any folder layout; searched recursively),
              e.g. decoded from your own copy's bgimage / evimage / fgimage / face archives
 
-For every background, CG, character sprite and face portrait the game uses, the original
-is cropped the way the converter cropped it (backgrounds whole; sprites and faces to their
-visible area) and written to GAME_DIR/hd/<same path> at full resolution. Each result is
-checked against the existing small image (shrunk and compared) and skipped if it does not
-match, so a wrong source never replaces a picture. 3DVN on PC and Wii U draws hd/ images
+For every background, CG, character sprite and face portrait the game uses, the area of
+the original that the small image shows is found by template matching (scale and
+position; the small images are reframed crops) and written to GAME_DIR/hd/<same path> at
+full resolution. Each result must correlate with the small image (--min-match), so a
+wrong source or a different composition never replaces a picture. 3DVN on PC and Wii U draws hd/ images
 in place of the normal ones at the same size; the 3DS ignores hd/.
 Cut-in images (cut_*) are left as they are.
 """
 import argparse, concurrent.futures, os, sys
-from PIL import Image, ImageChops, ImageStat
+import numpy as np
+from PIL import Image
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("game")
 parser.add_argument("decoded")
 parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
-parser.add_argument("--max-diff", type=float, default=14.0,
-                    help="largest mean colour difference (0-255) accepted between shrunk HD and small image")
+parser.add_argument("--min-match", type=float, default=0.9,
+                    help="minimum correlation (0..1) between the small image and the found crop of the "
+                         "original, compared at quarter resolution; correct matches score 0.92+, "
+                         "different compositions (e.g. zoomed-out 4:3 CGs) 0.81 or less")
 args = parser.parse_args()
 
 sources = {}
@@ -34,17 +37,86 @@ for folder, _, names in os.walk(args.decoded):
 print(f"{len(sources)} decoded originals found")
 
 
-def difference(hd, small):
-    """Mean per-channel difference after shrinking hd to the small image's size."""
-    shrunk = hd.resize(small.size, Image.LANCZOS)
-    if small.mode == "RGBA":
-        # compare colours on black so transparent areas count the same in both
-        back = Image.new("RGBA", small.size, (0, 0, 0, 255))
-        a = Image.alpha_composite(back, shrunk.convert("RGBA")).convert("RGB")
-        b = Image.alpha_composite(back, small.convert("RGBA")).convert("RGB")
-    else:
-        a, b = shrunk.convert("RGB"), small.convert("RGB")
-    return sum(ImageStat.Stat(ImageChops.difference(a, b)).mean) / 3.0
+def similarity(hd, small):
+    """Correlation of the two pictures at quarter resolution. Unlike a plain difference
+    this does not favour dark images and ignores slight misregistration of fine detail."""
+    size = (max(8, small.width // 4), max(8, small.height // 4))
+    a = planes(hd.convert("RGBA") if small.mode == "RGBA" else hd, size).ravel()
+    b = planes(small, size).ravel()
+    a, b = a - a.mean(), b - b.mean()
+    norm = np.sqrt((a * a).sum() * (b * b).sum())
+    return float((a * b).sum() / norm) if norm else 0.0
+
+
+def planes(image, size=None):
+    """float32 H x W x C: colours on black, plus alpha for images that have it."""
+    if size:
+        image = image.resize(size, Image.BOX if image.width > size[0] else Image.BICUBIC)
+    if image.mode == "RGBA":
+        array = np.asarray(image, np.float32)
+        array[..., :3] *= array[..., 3:4] / 255.0
+        return array
+    return np.asarray(image.convert("RGB"), np.float32)
+
+
+def match(big, small):
+    """Best (ssd, x, y) of small inside big (both H x W x C) by FFT correlation."""
+    bh, bw, _ = big.shape
+    sh, sw, _ = small.shape
+    if bh < sh or bw < sw:
+        return None
+    fh, fw = bh + sh, bw + sw
+    corr = np.zeros((bh - sh + 1, bw - sw + 1))
+    for c in range(big.shape[2]):
+        f = np.fft.rfft2(big[..., c], (fh, fw)) * np.conj(np.fft.rfft2(small[..., c], (fh, fw)))
+        corr += np.fft.irfft2(f, (fh, fw))[:bh - sh + 1, :bw - sw + 1]
+    sq = np.pad((big ** 2).sum(axis=2), ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    window = sq[sh:, sw:] - sq[:-sh, sw:] - sq[sh:, :-sw] + sq[:-sh, :-sw]
+    ssd = window - 2 * corr + (small ** 2).sum()
+    y, x = np.unravel_index(np.argmin(ssd), ssd.shape)
+    return ssd[y, x] / small.size, int(x), int(y)
+
+
+def find_crop(hd, small):
+    """Box in hd that shows what small shows: the 3DS images are scaled-down crops
+    (other framing for 4:3, upper bodies of full-length sprites) of the originals.
+    Searches scale and position at low resolution, then refines at full size."""
+    k_max = min(hd.width / small.width, hd.height / small.height)
+    if k_max < 1.5:
+        return None
+    f = 64 / max(small.size)                         # search resolution
+    target = planes(small, (max(8, round(small.width * f)), max(8, round(small.height * f))))
+    best = None
+    k = k_max
+    while k >= max(1.5, k_max * 0.55):
+        size = (round(hd.width / k * target.shape[1] / small.width), round(hd.height / k * target.shape[0] / small.height))
+        found = match(planes(hd, size), target)
+        if found and (best is None or found[0] < best[0]):
+            best = (found[0], k, found[1] * hd.width / size[0], found[2] * hd.height / size[1])
+        k *= 0.97
+    if best is None:
+        return None
+    _, k, x, y = best
+    # refine: full small resolution, scales around the best one, positions near it
+    target = planes(small)
+    refined = None
+    for kk in np.linspace(k * 0.975, k * 1.025, 7):
+        if kk * small.width > hd.width or kk * small.height > hd.height:
+            continue
+        margin = 6 * kk
+        left, top = max(0, x - margin), max(0, y - margin)
+        right = min(hd.width, x + kk * small.width + margin)
+        bottom = min(hd.height, y + kk * small.height + margin)
+        region = hd.crop((round(left), round(top), round(right), round(bottom)))
+        size = (round(region.width / kk), round(region.height / kk))
+        found = match(planes(region, size), target)
+        if found and (refined is None or found[0] < refined[0]):
+            refined = (found[0], kk, left + found[1] * region.width / size[0], top + found[2] * region.height / size[1])
+    if refined:
+        _, k, x, y = refined
+    w, h = k * small.width, k * small.height
+    x, y = min(max(0, x), hd.width - w), min(max(0, y), hd.height - h)
+    return round(x), round(y), round(x + w), round(y + h)
 
 
 def job(item):
@@ -56,18 +128,18 @@ def job(item):
         small.load()
         image = Image.open(source)
         if kind == "bg":
-            hd = image.convert("RGB")
+            whole = image.convert("RGB")
         else:
             image = image.convert("RGBA")
             box = image.getchannel("A").getbbox()
             if box is None:
                 return kind, "empty"
-            hd = image.crop(box)
-        if abs(hd.width / hd.height - small.width / small.height) > 0.03:
-            return kind, "shape"
-        if hd.width < small.width * 1.5:
+            whole = image.crop(box)
+        box = find_crop(whole, small)
+        if box is None:
             return kind, "not larger"
-        if difference(hd, small) > args.max_diff:
+        hd = whole.crop(box)
+        if similarity(hd, small) < args.min_match:
             return kind, "different"
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if kind == "bg":
