@@ -2358,19 +2358,28 @@ static void draw_game_menu(void)
 
 #define OPTION_ROWS 6
 
+/* Labels and current values of the Options rows. */
+static void option_texts(const char **labels, const char **values)
+{
+	static const char *speeds[] = {"Slow", "Normal", "Fast", "Instant"};
+	static const char *waits[] = {"Short", "Normal", "Long"};
+	static const char *names[OPTION_ROWS] = {"Textbox", "Display style", "Text screen", "Text speed",
+		"Auto speed", "Fast-forward"};
+	for (int i = 0; i < OPTION_ROWS; ++i) labels[i] = names[i];
+	values[0] = display_options_use_custom(&display_options, current_textbox_available()) ? "Custom" : "Default";
+	values[1] = display_options.nvl ? "NVL" : "ADV";
+	values[2] = display_options.bottom_text ? "Bottom" : display_options.touch_choices ? "Top, choices below" : "Top";
+	values[3] = speeds[display_options.text_speed & 3];
+	values[4] = waits[display_options.auto_speed % 3];
+	values[5] = display_options.skip_read ? "Read only" : "All";
+}
+
 static void draw_options(void)
 {
 	draw_backdrop(IMG_MENU_BG, 225);
 	draw_line(config.labels[LABEL_OPTIONS], 40, 14, 0.7f, theme_accent(), Z_OVERLAY_TEXT, 320);
-	static const char *speeds[] = {"Slow", "Normal", "Fast", "Instant"};
-	static const char *waits[] = {"Short", "Normal", "Long"};
-	const char *labels[OPTION_ROWS] = {"Textbox", "Display style", "Text screen", "Text speed", "Auto speed",
-		"Fast-forward"};
-	const char *values[OPTION_ROWS] = {
-		display_options_use_custom(&display_options, current_textbox_available()) ? "Custom" : "Default",
-		display_options.nvl ? "NVL" : "ADV", display_options.bottom_text ? "Bottom" : display_options.touch_choices ? "Top, choices below" : "Top",
-		speeds[display_options.text_speed & 3], waits[display_options.auto_speed % 3],
-		display_options.skip_read ? "Read only" : "All"};
+	const char *labels[OPTION_ROWS], *values[OPTION_ROWS];
+	option_texts(labels, values);
 	for (int i = 0; i < OPTION_ROWS; ++i) {
 		float y = 46.0f + i * 27.0f;
 		int selected = i == panel_cursor;
@@ -2861,6 +2870,20 @@ static int title_touch_labels(const char **labels)
 	return title_count;
 }
 
+static int option_touch_labels(const char **labels)
+{
+	static char rows[OPTION_ROWS][64];
+	const char *names[OPTION_ROWS], *values[OPTION_ROWS];
+	option_texts(names, values);
+	for (int i = 0; i < OPTION_ROWS; ++i) {
+		snprintf(rows[i], sizeof(rows[i]), "%s:  %s", names[i], values[i]);
+		labels[i] = rows[i];
+	}
+	return OPTION_ROWS;
+}
+
+static const char *const quit_touch_labels[] = {"Yes, quit to the game list"};
+
 static int menu_touch_labels(const char **labels)
 {
 	for (int index = 0; index < menu_count; ++index) labels[index] = config.labels[menu_items[index]];
@@ -2897,6 +2920,18 @@ static void draw_bottom(C3D_RenderTarget *target)
 		draw_wrapped(message, 14, 34, BOTTOM_W - 28, 0.45f, white, Z_TEXT);
 		draw_line(extras_mode ? "B return to title" : "B back to list",
 			14, 224, 0.4f, dim, Z_TEXT, 0.0f);
+		return;
+	}
+	if (panel == PANEL_OPTIONS && (mode == MODE_TITLE || mode == MODE_PLAY)) {
+		const char *labels[OPTION_ROWS];
+		int count = option_touch_labels(labels);
+		/* The header doubles as the place for "Options saved" etc., so nothing overlaps the rows. */
+		draw_touch_list(notice[0] != '\0' ? notice : "Options  (tap to change)", labels, count, panel_cursor, "Back");
+		return;
+	}
+	if (panel == PANEL_QUIT && mode == MODE_PLAY) {
+		draw_touch_list("Quit to the game list?", quit_touch_labels, 1, -1, "No, keep playing");
+		draw_line("Unsaved progress will be lost.", 20, 80, 0.45f, C2D_Color32(150, 170, 165, 255), Z_TEXT, BOTTOM_W - 40);
 		return;
 	}
 	if (mode == MODE_TITLE && panel == PANEL_NONE) {
@@ -3223,6 +3258,19 @@ static void handle_panel_input(u32 down, u32 repeat)
 			toggle_display_option(1);
 		} else if (down & KEY_DLEFT) {
 			toggle_display_option(-1);
+		} else if (down & KEY_TOUCH) {
+			touchPosition touch;
+			hidTouchRead(&touch);
+			const char *labels[OPTION_ROWS];
+			Button buttons[OPTION_ROWS + 1];
+			int count = option_touch_labels(labels);
+			int hit = hit_button(buttons, touch_list_buttons(buttons, labels, count, "Back"), &touch);
+			if (hit >= 0 && hit < count) {
+				panel_cursor = hit;
+				toggle_display_option(1);
+			} else if (hit == count) {
+				close_panel();
+			}
 		}
 		break;
 	}
@@ -3266,6 +3314,16 @@ static void handle_panel_input(u32 down, u32 repeat)
 			leave_game();
 		} else if (down & KEY_B) {
 			close_panel();
+		} else if (down & KEY_TOUCH) {
+			touchPosition touch;
+			hidTouchRead(&touch);
+			Button buttons[2];
+			int hit = hit_button(buttons, touch_list_buttons(buttons, quit_touch_labels, 1, "No, keep playing"), &touch);
+			if (hit == 0) {
+				leave_game();
+			} else if (hit == 1) {
+				close_panel();
+			}
 		}
 		break;
 	}

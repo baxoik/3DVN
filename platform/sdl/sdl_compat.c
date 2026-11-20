@@ -865,15 +865,23 @@ static u32 read_keys(void)
 	if (k[SDL_SCANCODE_DOWN]) keys |= KEY_DDOWN;
 	if (k[SDL_SCANCODE_LEFT]) keys |= KEY_DLEFT;
 	if (k[SDL_SCANCODE_RIGHT]) keys |= KEY_DRIGHT;
-	/* Controllers. SDL names buttons by position (A = bottom); Nintendo layouts put
-	   A on the right, so map by position: right = A, bottom = B, top = X, left = Y. */
+	/* Controllers. On Wii U, SDL reports the GamePad buttons by their printed labels
+	   (A = A). Elsewhere SDL names buttons by position (A = bottom, Xbox style), so map
+	   by position to the Nintendo layout: right = A, bottom = B, top = X, left = Y. */
+#ifdef __WIIU__
+	const SDL_GameControllerButton pad_a = SDL_CONTROLLER_BUTTON_A, pad_b = SDL_CONTROLLER_BUTTON_B,
+		pad_x = SDL_CONTROLLER_BUTTON_X, pad_y = SDL_CONTROLLER_BUTTON_Y;
+#else
+	const SDL_GameControllerButton pad_a = SDL_CONTROLLER_BUTTON_B, pad_b = SDL_CONTROLLER_BUTTON_A,
+		pad_x = SDL_CONTROLLER_BUTTON_Y, pad_y = SDL_CONTROLLER_BUTTON_X;
+#endif
 	for (int i = 0; i < SDL_NumJoysticks(); ++i) {
 		SDL_GameController *c = SDL_GameControllerFromInstanceID(SDL_JoystickGetDeviceInstanceID(i));
 		if (c == NULL) continue;
-		if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_B)) keys |= KEY_A;
-		if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A)) keys |= KEY_B;
-		if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_Y)) keys |= KEY_X;
-		if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_X)) keys |= KEY_Y;
+		if (SDL_GameControllerGetButton(c, pad_a)) keys |= KEY_A;
+		if (SDL_GameControllerGetButton(c, pad_b)) keys |= KEY_B;
+		if (SDL_GameControllerGetButton(c, pad_x)) keys |= KEY_X;
+		if (SDL_GameControllerGetButton(c, pad_y)) keys |= KEY_Y;
 		if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) keys |= KEY_L;
 		if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
 			|| SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000) keys |= KEY_R;
