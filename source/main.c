@@ -1881,8 +1881,14 @@ static void draw_scene(void)
 		draw_bg_layer(scene.bg, 1.0f, Z_BG);
 	}
 
+	/* Two passes: close-up sprites (asset name ending in "_b") are drawn after the
+	   others so they stay in front, as in the original game (index 5000 vs 3000). */
+	for (int pass = 0; pass < 2; ++pass)
 	for (int index = 0; index < MAX_SPRITES; ++index) {
 		const Sprite *sprite = &scene.sprites[index];
+		size_t asset_len = strlen(sprite->asset);
+		int close_up = asset_len > 2 && !strcmp(sprite->asset + asset_len - 2, "_b");
+		if (close_up != pass) continue;
 		Picture *picture = sprite->active ? get_picture("sprites", sprite->asset) : NULL;
 		if (picture != NULL && !strcmp(sprite->pos, "face")) {
 			/* Speaker portrait: fixed above the text box's left corner, unaffected by camera effects. */
