@@ -846,6 +846,76 @@ static int output_of_window(Uint32 id)
 	return 0;
 }
 
+#ifdef __WIIU__
+#include <coreinit/dynload.h>
+#include <coreinit/title.h>
+#include <sysapp/launch.h>
+
+/* Homebrew Launcher locations, relative to the SD card root (Aroma installs the .wuhb). */
+static const char *const hbl_paths[] = {
+	"wiiu/apps/homebrew_launcher/homebrew_launcher.wuhb",
+	"wiiu/apps/homebrew_launcher.wuhb",
+	"wiiu/apps/homebrew_launcher/homebrew_launcher.rpx",
+};
+
+static int running_in_mii_maker(void)   /* the legacy Homebrew Launcher runs apps there */
+{
+	uint64_t id = OSGetTitleID();
+	return id == 0x000500101004A000ull || id == 0x000500101004A100ull || id == 0x000500101004A200ull;
+}
+
+typedef int32_t (*RLLaunchHomebrew)(const char *bundle_path);
+
+/* Aroma's RPXLoader module (homebrew_rpx_loader), looked up at run time so no library is needed. */
+static RLLaunchHomebrew rpx_loader_launch(void)
+{
+	static int looked_up;
+	static RLLaunchHomebrew launch;
+	if (!looked_up) {
+		looked_up = 1;
+		OSDynLoad_Module module;
+		void *address = NULL;
+		if (OSDynLoad_Acquire("homebrew_rpx_loader", &module) == OS_DYNLOAD_OK
+			&& OSDynLoad_FindExport(module, OS_DYNLOAD_EXPORT_FUNC, "RL_LaunchHomebrew", &address) == OS_DYNLOAD_OK) {
+			launch = (RLLaunchHomebrew)address;
+		}
+	}
+	return launch;
+}
+
+static const char *hbl_path(void)
+{
+	for (size_t i = 0; i < sizeof(hbl_paths) / sizeof(hbl_paths[0]); ++i) {
+		char full[160];
+		snprintf(full, sizeof(full), "fs:/vol/external01/%s", hbl_paths[i]);
+		FILE *f = fopen(full, "rb");
+		if (f != NULL) {
+			fclose(f);
+			return hbl_paths[i];
+		}
+	}
+	return NULL;
+}
+
+int vn_wiiu_can_exit_to_hbl(void)
+{
+	return running_in_mii_maker() || (rpx_loader_launch() != NULL && hbl_path() != NULL);
+}
+
+int vn_wiiu_exit_to_hbl(void)
+{
+	if (running_in_mii_maker()) return 2;
+	RLLaunchHomebrew launch = rpx_loader_launch();
+	const char *path = hbl_path();
+	return launch != NULL && path != NULL && launch(path) == 0 ? 1 : 0;
+}
+
+void vn_wiiu_exit_to_menu(void)
+{
+	SYSLaunchMenu();
+}
+#endif
+
 bool aptMainLoop(void)
 {
 	SDL_Event e;

@@ -2757,6 +2757,115 @@ static void draw_title_menu(void)
 		C2D_Color32(150, 170, 165, 255), Z_OVERLAY_TEXT, 0.0f);
 }
 
+#if defined(__WIIU__) || defined(VN_EXIT_MENU_TEST)
+#define START_HINT "START exit menu"
+#else
+#define START_HINT "START exit app"
+#endif
+static int hit_button(const Button *buttons, int count, const touchPosition *touch);
+static int touch_list_buttons(Button *out, const char *const *labels, int count, const char *extra);
+static void draw_touch_list(const char *header, const char *const *labels, int count, int cursor,
+	const char *extra);
+
+#if defined(__WIIU__) || defined(VN_EXIT_MENU_TEST)
+/* Wii U: START asks where to go (Homebrew Launcher, Wii U Menu) instead of quitting.
+   VN_EXIT_MENU_TEST builds the same menu on PC, with stand-ins, to test it. */
+#define EXIT_MENU 1
+#ifdef VN_EXIT_MENU_TEST
+static int vn_wiiu_can_exit_to_hbl(void) { return getenv("VN_NO_HBL") == NULL; }
+static int vn_wiiu_exit_to_hbl(void) { TEST_LOG("EXIT hbl"); fprintf(stderr, "EXIT hbl\n"); return 2; }
+static void vn_wiiu_exit_to_menu(void) { fprintf(stderr, "EXIT menu\n"); }
+#endif
+enum { EXIT_HBL, EXIT_WIIU_MENU };
+static int exit_open, exit_cursor, exit_count, exit_items[2], exiting;
+static const char *const exit_labels[] = {"Homebrew Launcher", "Wii U Menu"};
+
+static void open_exit_menu(void)
+{
+	exit_count = 0;
+	if (vn_wiiu_can_exit_to_hbl()) exit_items[exit_count++] = EXIT_HBL;
+	exit_items[exit_count++] = EXIT_WIIU_MENU;
+	exit_cursor = 0;
+	exit_open = 1;
+}
+
+static int exit_menu_labels(const char **labels)
+{
+	for (int i = 0; i < exit_count; ++i) labels[i] = exit_labels[exit_items[i]];
+	return exit_count;
+}
+
+/* Returns 1 when the app should end now (a plain exit goes back to the launcher). */
+static int choose_exit(int item)
+{
+	exit_open = 0;
+	if (item == EXIT_WIIU_MENU) {
+		vn_wiiu_exit_to_menu();
+		exiting = 1;   /* the system closes the app shortly */
+		return 0;
+	}
+	int result = vn_wiiu_exit_to_hbl();
+	if (result == 2) return 1;
+	if (result == 1) {
+		exiting = 1;
+	} else {
+		snprintf(notice, sizeof(notice), "Homebrew Launcher not found");
+	}
+	return 0;
+}
+
+static int handle_exit_menu(u32 down, u32 repeat)
+{
+	if (down & (KEY_B | KEY_START)) {
+		exit_open = 0;
+		return 0;
+	}
+	if (repeat & KEY_DDOWN) exit_cursor = (exit_cursor + 1) % exit_count;
+	if (repeat & KEY_DUP) exit_cursor = (exit_cursor + exit_count - 1) % exit_count;
+	if (down & KEY_A) return choose_exit(exit_items[exit_cursor]);
+	if (down & KEY_TOUCH) {
+		touchPosition touch;
+		hidTouchRead(&touch);
+		const char *labels[2];
+		Button buttons[3];
+		int count = exit_menu_labels(labels);
+		int hit = hit_button(buttons, touch_list_buttons(buttons, labels, count, "Cancel"), &touch);
+		if (hit >= 0 && hit < count) return choose_exit(exit_items[hit]);
+		if (hit == count) exit_open = 0;
+	}
+	return 0;
+}
+
+static void draw_exit_top(void)
+{
+	rect(0, 0, TOP_W, TOP_H, C2D_Color32(0, 0, 0, 150), Z_OVERLAY);
+	draw_panel(IMG_ITEM, 90, 60, 220, 40 + 28.0f * (exiting ? 1 : exit_count), theme_panel(235), Z_OVERLAY);
+	draw_line(exiting ? "Exiting..." : "Exit to", 104, 68, 0.6f, theme_accent(), Z_OVERLAY_TEXT, 190);
+	for (int i = 0; !exiting && i < exit_count; ++i) {
+		float y = 96.0f + 28.0f * i;
+		int selected = i == exit_cursor;
+		if (selected) draw_panel(IMG_ITEM_SEL, 100, y - 2, 200, 24, theme_accent(), Z_OVERLAY + 0.001f);
+		draw_line(exit_labels[exit_items[i]], 112, y + 2, 0.5f,
+			selected && !ui_image(IMG_ITEM_SEL) ? theme_dark_text() : theme_text(), Z_OVERLAY_TEXT, 180);
+	}
+}
+
+static void draw_exit_bottom(C3D_RenderTarget *target)
+{
+	C2D_TargetClear(target, C2D_Color32(17, 29, 34, 255));
+	C2D_SceneBegin(target);
+	C2D_TextBufClear(text_buf);
+	if (exiting) {
+		draw_line("Exiting...", 20, 100, 0.6f, theme_accent(), Z_TEXT, BOTTOM_W - 40);
+		return;
+	}
+	const char *labels[2];
+	int count = exit_menu_labels(labels);
+	draw_touch_list("Exit to", labels, count, exit_cursor, "Cancel");
+	draw_line("B / START cancel", 20, 186, 0.4f, C2D_Color32(150, 170, 165, 255), Z_TEXT, 0.0f);
+}
+#endif
+
 static void draw_top(C3D_RenderTarget *target)
 {
 	C2D_TargetClear(target, C2D_Color32(0, 0, 0, 255));
@@ -3257,7 +3366,7 @@ static void draw_bottom(C3D_RenderTarget *target)
 	}
 	draw_line(waiting == PLAY_MENU ? "D-pad choose   A confirm" : "A next   Y auto   Hold R fast-forward",
 		14, 176, 0.42f, dim, Z_TEXT, 0.0f);
-	draw_line(ui_hidden ? "Text hidden - press B or A" : "START exit app", 14, 192, 0.42f, dim, Z_TEXT, 0.0f);
+	draw_line(ui_hidden ? "Text hidden - press B or A" : START_HINT, 14, 192, 0.42f, dim, Z_TEXT, 0.0f);
 	if (notice[0] != '\0') {
 		draw_line(notice, 14, 212, 0.45f, C2D_Color32(255, 200, 120, 255), Z_TEXT, BOTTOM_W - 28);
 	}
@@ -3830,9 +3939,22 @@ int main(void)
 		float dt = (float)(now - last) / 1000.0f;
 		last = now;
 
+#ifdef EXIT_MENU
+		if (exiting) {
+			down = repeat = 0;   /* wait for the system to close the app */
+		} else if (exit_open || (down & KEY_START)) {
+			if (!exit_open) {
+				open_exit_menu();
+			} else if (handle_exit_menu(down, repeat)) {
+				break;
+			}
+			down = repeat = 0;
+		}
+#else
 		if (down & KEY_START) {
 			break;
 		}
+#endif
 
 		audio_update(dt);
 #ifdef AUTOTEST
@@ -3910,7 +4032,16 @@ int main(void)
 
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 		draw_top(top);
+#ifdef EXIT_MENU
+		if (exit_open || exiting) {
+			draw_exit_top();
+			draw_exit_bottom(bottom);
+		} else {
+			draw_bottom(bottom);
+		}
+#else
 		draw_bottom(bottom);
+#endif
 		C3D_FrameEnd(0);
 	}
 
