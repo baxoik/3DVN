@@ -168,6 +168,10 @@ static GsProgram *program;
 static char current_script[GS_STR_LEN]; /* script switched to by `script`; empty while main.3vs runs */
 static GsState state;
 static GsEvent event;
+/* The last line of dialogue, kept on screen during a wait that directly follows it
+   (sound may play in between): the original games keep their text window up. */
+static GsEvent held_say;
+static int say_held;
 static Scene scene;
 static GsBgLoop bgloop;
 static NvlPage nvl_page;
@@ -1379,6 +1383,7 @@ static int load_slot(int slot)
 		clear_bgloop();
 	}
 	state = data->state;
+	say_held = 0;
 	globals_apply();
 	scene = data->scene;
 	event = data->event;
@@ -1613,6 +1618,7 @@ static void start_game(const char *name)
 
 static void begin_game(void)
 {
+	say_held = 0;
 	gs_state_init(program, &state);
 	globals_apply();
 	memset(&backlog, 0, sizeof(backlog));
@@ -1860,6 +1866,12 @@ static void advance(void)
 	for (;;) {
 		gs_next(program, &state, &event);
 		if (!extras_mode) globals_sync();
+		if (event.type == GS_EV_SAY) {
+			held_say = event;
+			say_held = 1;
+		} else if (event.type != GS_EV_SFX && event.type != GS_EV_MUSIC && event.type != GS_EV_WAIT) {
+			say_held = 0;
+		}
 		switch (event.type) {
 		case GS_EV_PAGE:
 			nvl_page_clear(&nvl_page);
@@ -2937,6 +2949,13 @@ static void draw_top(C3D_RenderTarget *target)
 	} else if (display_options.nvl && config.num[NUM_NVL_ACCUMULATE] && nvl_page.length
 		&& (waiting == PLAY_TIMER || waiting == PLAY_WAITBG)) {
 		draw_textbox();
+	} else if (waiting == PLAY_TIMER && say_held) {
+		if (!bottom_text_active()) {
+			GsEvent current = event;
+			event = held_say;
+			draw_textbox();
+			event = current;
+		}
 	} else if (waiting == PLAY_END && (scene.bg[0] == '\0' || !strcmp(scene.bg, "black"))) {
 		/* Only over an empty screen: games that show their own end card keep it clean. */
 		draw_line("THE END", 150, 100, 0.8f, C2D_Color32(255, 255, 255, 255), Z_TEXT, 0.0f);
@@ -3352,7 +3371,10 @@ static void draw_bottom(C3D_RenderTarget *target)
 
 	if (touch_layout_active()) {
 		if (bottom_text_active()) {
+			GsEvent current = event;
+			if (waiting == PLAY_TIMER && say_held) event = held_say;
 			draw_bottom_dialogue();
+			event = current;
 		} else {
 			draw_bottom_controls();
 		}
