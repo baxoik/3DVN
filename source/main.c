@@ -2036,11 +2036,21 @@ static void draw_panel(int image, float x, float y, float w, float h, u32 color,
 static void reveal_with_breaks(const char *full, size_t visible, float width, float scale,
 	char *out, size_t size)
 {
-	unsigned short starts[64], ends[64];
-	float previous_scale = measure_scale;
-	measure_scale = scale;
-	int count = wrap_text_lines(full, width - 2.0f, measure_text, NULL, starts, ends, 64);
-	measure_scale = previous_scale;
+	/* The layout of a line does not change while it is typed out: measure it once
+	   (measuring is slow on Wii U, and this runs every frame). */
+	static unsigned short starts[64], ends[64];
+	static char cached_text[GS_TEXT_LEN];
+	static float cached_width = -1.0f, cached_scale;
+	static int count;
+	if (cached_width != width || cached_scale != scale || strncmp(cached_text, full, sizeof(cached_text))) {
+		float previous_scale = measure_scale;
+		measure_scale = scale;
+		count = wrap_text_lines(full, width - 2.0f, measure_text, NULL, starts, ends, 64);
+		measure_scale = previous_scale;
+		snprintf(cached_text, sizeof(cached_text), "%s", full);
+		cached_width = width;
+		cached_scale = scale;
+	}
 	size_t used = 0;
 	if (count <= 0 || count >= 64) {   /* fall back to the plain prefix */
 		used = visible < size - 1 ? visible : size - 1;
