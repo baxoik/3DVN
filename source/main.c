@@ -220,6 +220,19 @@ static int bottom_text_active(void)
 	return display_options.bottom_text && !display_options.nvl;
 }
 
+/* "Top, choices below": text stays on the top screen; the bottom screen holds the
+   control strip and the choices as touch buttons. */
+static int choices_below_active(void)
+{
+	return !bottom_text_active() && display_options.touch_choices;
+}
+
+/* Either touch layout: strip buttons, tappable choices, tap to advance. */
+static int touch_layout_active(void)
+{
+	return bottom_text_active() || choices_below_active();
+}
+
 /* Text speed and auto-mode pacing from Options. */
 static float text_chars_per_sec(void)
 {
@@ -906,7 +919,11 @@ static void toggle_display_option(int step)
 	} else if (panel_cursor == 1) {
 		next.nvl = !next.nvl;
 	} else if (panel_cursor == 2) {
-		next.bottom_text = !next.bottom_text;
+		/* Top -> Top, choices below -> Bottom (and back with Left). */
+		int mode = next.bottom_text ? 2 : next.touch_choices ? 1 : 0;
+		mode = (mode + 3 + step) % 3;
+		next.bottom_text = mode == 2;
+		next.touch_choices = mode == 1;
 	} else if (panel_cursor == 3) {
 		next.text_speed = (next.text_speed + 4 + step) % 4;
 	} else if (panel_cursor == 4) {
@@ -2330,7 +2347,7 @@ static void draw_options(void)
 		"Fast-forward"};
 	const char *values[OPTION_ROWS] = {
 		display_options_use_custom(&display_options, current_textbox_available()) ? "Custom" : "Default",
-		display_options.nvl ? "NVL" : "ADV", display_options.bottom_text ? "Bottom" : "Top",
+		display_options.nvl ? "NVL" : "ADV", display_options.bottom_text ? "Bottom" : display_options.touch_choices ? "Top, choices below" : "Top",
 		speeds[display_options.text_speed & 3], waits[display_options.auto_speed % 3],
 		display_options.skip_read ? "Read only" : "All"};
 	for (int i = 0; i < OPTION_ROWS; ++i) {
@@ -2532,7 +2549,7 @@ static void draw_top(C3D_RenderTarget *target)
 	} else if (ui_hidden) {
 		return;
 	} else if (waiting == PLAY_MENU) {
-		if (!bottom_text_active()) {
+		if (!touch_layout_active()) {
 			draw_choices();
 		}
 	} else if (waiting == PLAY_TEXT) {
@@ -2614,6 +2631,53 @@ static void draw_strip_button(const Button *button, int selected)
 		selected && !ui_image(IMG_ITEM_SEL) ? theme_dark_text() : theme_text(), Z_TEXT, 0.0f);
 }
 
+/* Choices as touch buttons on the bottom screen (both touch layouts). */
+static void draw_choice_buttons(void)
+{
+	Button buttons[GS_MAX_CHOICES];
+	int count = choice_buttons(buttons);
+	for (int index = 0; index < count; ++index) {
+		const Button *b = &buttons[index];
+		int selected = index == menu_cursor;
+		int skinned = ui_image(selected ? IMG_CHOICE_SEL : IMG_CHOICE) != NULL;
+		draw_panel(selected ? IMG_CHOICE_SEL : IMG_CHOICE, b->x, b->y, b->w, b->h,
+			selected ? theme_accent() : theme_item(), Z_BOX + 0.01f);
+		if (!selected) {
+			/* Light tint and outline so the buttons read as tappable in any theme. */
+			const u32 tint = C2D_Color32(255, 255, 255, 22), edge = C2D_Color32(255, 255, 255, 70);
+			rect(b->x, b->y, b->w, b->h, tint, Z_BOX + 0.015f);
+			rect(b->x, b->y, b->w, 1.0f, edge, Z_BOX + 0.016f);
+			rect(b->x, b->y + b->h - 1.0f, b->w, 1.0f, edge, Z_BOX + 0.016f);
+			rect(b->x, b->y, 1.0f, b->h, edge, Z_BOX + 0.016f);
+			rect(b->x + b->w - 1.0f, b->y, 1.0f, b->h, edge, Z_BOX + 0.016f);
+		}
+		float scale = fminf(0.5f, b->h / 44.0f);
+		draw_line(b->label, b->x + 10.0f, b->y + (b->h - 30.0f * scale) / 2.0f, scale,
+			selected && !skinned ? theme_dark_text() : theme_text(), Z_TEXT, b->w - 20.0f);
+	}
+}
+
+/* Bottom screen in the "Top, choices below" layout: a control panel above the strip. */
+static void draw_bottom_controls(void)
+{
+	const float bh = STRIP_Y - 4.0f;
+	rect(0, 0, BOTTOM_W, bh, theme_panel(235), Z_BOX);
+	rect(0, bh - 2.0f, BOTTOM_W, 2.0f, theme_accent(), Z_BOX);
+	const u32 dim = C2D_Color32(150, 170, 165, 255);
+	if (waiting == PLAY_MENU && !ui_hidden) {
+		draw_choice_buttons();
+		return;
+	}
+	draw_line(game_name, 12, 10, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 24);
+	draw_line(ui_hidden ? "Text hidden - tap or press A" : "Tap here or press A: next line",
+		12, 44, 0.45f, theme_text(), Z_TEXT, BOTTOM_W - 24);
+	draw_line("Hold R: fast-forward      Y: auto", 12, 66, 0.42f, dim, Z_TEXT, BOTTOM_W - 24);
+	draw_line("Choices appear here as buttons", 12, 86, 0.42f, dim, Z_TEXT, BOTTOM_W - 24);
+	if (notice[0] != '\0') {
+		draw_line(notice, 12, bh - 24.0f, 0.42f, C2D_Color32(255, 200, 120, 255), Z_TEXT, BOTTOM_W - 24);
+	}
+}
+
 /* Dialogue panel filling the bottom screen above the button strip (bottom-text layout). */
 static void draw_bottom_dialogue(void)
 {
@@ -2631,27 +2695,7 @@ static void draw_bottom_dialogue(void)
 		return;
 	}
 	if (waiting == PLAY_MENU) {
-		Button buttons[GS_MAX_CHOICES];
-		int count = choice_buttons(buttons);
-		for (int index = 0; index < count; ++index) {
-			const Button *b = &buttons[index];
-			int selected = index == menu_cursor;
-			int skinned = ui_image(selected ? IMG_CHOICE_SEL : IMG_CHOICE) != NULL;
-			draw_panel(selected ? IMG_CHOICE_SEL : IMG_CHOICE, b->x, b->y, b->w, b->h,
-				selected ? theme_accent() : theme_item(), Z_BOX + 0.01f);
-			if (!selected) {
-				/* Light tint and outline so the buttons read as tappable in any theme. */
-				const u32 tint = C2D_Color32(255, 255, 255, 22), edge = C2D_Color32(255, 255, 255, 70);
-				rect(b->x, b->y, b->w, b->h, tint, Z_BOX + 0.015f);
-				rect(b->x, b->y, b->w, 1.0f, edge, Z_BOX + 0.016f);
-				rect(b->x, b->y + b->h - 1.0f, b->w, 1.0f, edge, Z_BOX + 0.016f);
-				rect(b->x, b->y, 1.0f, b->h, edge, Z_BOX + 0.016f);
-				rect(b->x + b->w - 1.0f, b->y, 1.0f, b->h, edge, Z_BOX + 0.016f);
-			}
-			float scale = fminf(0.5f, b->h / 44.0f);
-			draw_line(b->label, b->x + 10.0f, b->y + (b->h - 30.0f * scale) / 2.0f, scale,
-				selected && !skinned ? theme_dark_text() : theme_text(), Z_TEXT, b->w - 20.0f);
-		}
+		draw_choice_buttons();
 		(void)dim;
 		return;
 	}
@@ -2822,8 +2866,12 @@ static void draw_bottom(C3D_RenderTarget *target)
 		return;
 	}
 
-	if (bottom_text_active()) {
-		draw_bottom_dialogue();
+	if (touch_layout_active()) {
+		if (bottom_text_active()) {
+			draw_bottom_dialogue();
+		} else {
+			draw_bottom_controls();
+		}
 		for (int index = 0; index < COUNT_OF(strip_buttons); ++index) {
 			draw_strip_button(&strip_buttons[index], index == AUTO_BUTTON && auto_mode);
 		}
@@ -3168,7 +3216,7 @@ static void handle_play_input(u32 down, u32 held, float dt)
 		touchPosition touch;
 		hidTouchRead(&touch);
 		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT, PANEL_NONE};
-		int button = bottom_text_active() ? hit_button(strip_buttons, COUNT_OF(strip_buttons), &touch)
+		int button = touch_layout_active() ? hit_button(strip_buttons, COUNT_OF(strip_buttons), &touch)
 			: hit_button(play_buttons, COUNT_OF(play_buttons), &touch);
 		if (button == 2) {
 			ui_hidden = !ui_hidden;
@@ -3186,7 +3234,7 @@ static void handle_play_input(u32 down, u32 held, float dt)
 	}
 	/* Bottom-text layout: tapping the dialogue area works like A. */
 	int tap_text = 0;
-	if (bottom_text_active() && (down & KEY_TOUCH) && waiting != PLAY_MENU) {
+	if (touch_layout_active() && (down & KEY_TOUCH) && waiting != PLAY_MENU) {
 		touchPosition touch;
 		hidTouchRead(&touch);
 		tap_text = touch.py < STRIP_Y;
@@ -3270,7 +3318,7 @@ static void handle_play_input(u32 down, u32 held, float dt)
 			}
 		}
 		int touched = 0;
-		if (bottom_text_active() && (down & KEY_TOUCH)) {
+		if (touch_layout_active() && (down & KEY_TOUCH)) {
 			touchPosition touch;
 			hidTouchRead(&touch);
 			Button buttons[GS_MAX_CHOICES];

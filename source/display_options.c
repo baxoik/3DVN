@@ -28,6 +28,7 @@ void display_options_defaults(DisplayOptions *options)
 	options->text_speed = 1;
 	options->auto_speed = 1;
 	options->skip_read = false;
+	options->touch_choices = false;
 }
 
 bool display_options_use_custom(const DisplayOptions *options, bool available)
@@ -45,7 +46,7 @@ DisplayOptionsResult display_options_load(const char *path, DisplayOptions *opti
 {
 	char data[256];
 	size_t length, pos;
-	int seen_custom = 0, seen_nvl = 0, seen_bottom = 0, seen_speed = 0, seen_auto = 0, seen_skip = 0;
+	int seen_custom = 0, seen_nvl = 0, seen_bottom = 0, seen_speed = 0, seen_auto = 0, seen_skip = 0, seen_touch = 0;
 	DisplayOptions parsed;
 	display_options_defaults(&parsed);
 	FILE *file;
@@ -126,6 +127,10 @@ DisplayOptionsResult display_options_load(const char *path, DisplayOptions *opti
 			|| strcmp(data + start, "skip_read=1") == 0)) {
 			parsed.skip_read = data[start + 10] == '1';
 			seen_skip = 1;
+		} else if (!seen_touch && (strcmp(data + start, "touch_choices=0") == 0
+			|| strcmp(data + start, "touch_choices=1") == 0)) {
+			parsed.touch_choices = data[start + 14] == '1';
+			seen_touch = 1;
 		} else {
 			return DISPLAY_OPTIONS_MALFORMED;
 		}
@@ -165,9 +170,10 @@ DisplayOptionsResult display_options_save(const char *path, const DisplayOptions
 		free(backup);
 		return DISPLAY_OPTIONS_IO_ERROR;
 	}
-	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\nbottom_text=%d\ntext_speed=%d\nauto_speed=%d\nskip_read=%d\n",
+	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\nbottom_text=%d\ntext_speed=%d\nauto_speed=%d\nskip_read=%d\ntouch_choices=%d\n",
 		options->custom_textbox ? 1 : 0, options->nvl ? 1 : 0, options->bottom_text ? 1 : 0,
-		options->text_speed, options->auto_speed, options->skip_read ? 1 : 0) < 0;
+		options->text_speed, options->auto_speed, options->skip_read ? 1 : 0,
+		options->touch_choices ? 1 : 0) < 0;
 	if (fclose(file) != 0)
 		failed = 1;
 	if (!failed) {
