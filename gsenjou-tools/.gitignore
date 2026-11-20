@@ -5,6 +5,7 @@ silent-lines.md
 check_scripts
 voiced/
 emu/runs/
+emu/runs-pack/
 emu/Azahar/
 emu/shots/
 emu/*.so
