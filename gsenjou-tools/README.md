@@ -67,6 +67,9 @@ out of git (see `.gitignore`).
    - `chapter_select.py` adds a nested chapter-select menu after the
      adult-scenes question. Each entry sets the story flags you'd have earned
      before that chapter, so jumping ahead doesn't trigger flag-gated bad endings.
+   - `normalize_text.py` replaces characters the 3DS system font may lack in
+     dialogue, choices and names: full-width forms become ASCII, `～`/`〜` become
+     `~`, and a few rare symbols get plain stand-ins.
    - Every script is checked with `tests/check_scripts.c`.
 
    `REPORT=silent.md python3 gsenjou-tools/add_voices.py ...` writes a report of

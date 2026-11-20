@@ -8,6 +8,7 @@
 > - **Close-up sprites in front:** sprites named `*_b` are drawn after the others, as in the original game.
 > - **No "THE END" over a game's own end card:** it's only drawn over an empty or black screen.
 > - **Text on the bottom screen** (branch `bottom-text`): Options → "Text screen: Bottom" puts the dialogue, speaker name and face on the bottom screen, so the top screen shows only the scene. Choices appear on the bottom screen as buttons you can tap (D-pad + A still work). The other buttons move to a slim strip along the bottom edge. It's saved per game, and the default stays "Top".
+> - **More Options** (branch `bottom-text`): text speed (Slow / Normal / Fast / Instant), auto-mode speed (Short / Normal / Long), and "Fast-forward: Read only", which skips only lines you've already read. Read lines are remembered per game on the SD card. In the bottom-text layout, tapping the dialogue also advances like A.
 > - **Emulator test build:** `make EXTRA_CFLAGS=-DAUTOTEST` logs notices, errors, chapter loads and shrunk or overflowing lines to `sdmc:/3dvn-test.log`.
 >
 > **[gsenjou-tools/](gsenjou-tools/README.md)** (for G-Senjou no Maou)

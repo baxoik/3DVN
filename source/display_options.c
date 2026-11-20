@@ -25,6 +25,9 @@ void display_options_defaults(DisplayOptions *options)
 	options->custom_textbox = true;
 	options->nvl = false;
 	options->bottom_text = false;
+	options->text_speed = 1;
+	options->auto_speed = 1;
+	options->skip_read = false;
 }
 
 bool display_options_use_custom(const DisplayOptions *options, bool available)
@@ -40,11 +43,11 @@ void display_options_apply_game_default(DisplayOptions *options, DisplayOptionsR
 
 DisplayOptionsResult display_options_load(const char *path, DisplayOptions *options)
 {
-	char data[64];
+	char data[256];
 	size_t length, pos;
-	int seen_custom = 0, seen_nvl = 0, seen_bottom = 0;
+	int seen_custom = 0, seen_nvl = 0, seen_bottom = 0, seen_speed = 0, seen_auto = 0, seen_skip = 0;
 	DisplayOptions parsed;
-	parsed.bottom_text = false;
+	display_options_defaults(&parsed);
 	FILE *file;
 	int recovered = 0;
 
@@ -111,6 +114,18 @@ DisplayOptionsResult display_options_load(const char *path, DisplayOptions *opti
 		} else if (!seen_bottom && strcmp(data + start, "bottom_text=1") == 0) {
 			parsed.bottom_text = true;
 			seen_bottom = 1;
+		} else if (!seen_speed && strncmp(data + start, "text_speed=", 11) == 0
+			&& data[start + 11] >= '0' && data[start + 11] <= '3' && data[start + 12] == '\0') {
+			parsed.text_speed = data[start + 11] - '0';
+			seen_speed = 1;
+		} else if (!seen_auto && strncmp(data + start, "auto_speed=", 11) == 0
+			&& data[start + 11] >= '0' && data[start + 11] <= '2' && data[start + 12] == '\0') {
+			parsed.auto_speed = data[start + 11] - '0';
+			seen_auto = 1;
+		} else if (!seen_skip && (strcmp(data + start, "skip_read=0") == 0
+			|| strcmp(data + start, "skip_read=1") == 0)) {
+			parsed.skip_read = data[start + 10] == '1';
+			seen_skip = 1;
 		} else {
 			return DISPLAY_OPTIONS_MALFORMED;
 		}
@@ -150,8 +165,9 @@ DisplayOptionsResult display_options_save(const char *path, const DisplayOptions
 		free(backup);
 		return DISPLAY_OPTIONS_IO_ERROR;
 	}
-	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\nbottom_text=%d\n",
-		options->custom_textbox ? 1 : 0, options->nvl ? 1 : 0, options->bottom_text ? 1 : 0) < 0;
+	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\nbottom_text=%d\ntext_speed=%d\nauto_speed=%d\nskip_read=%d\n",
+		options->custom_textbox ? 1 : 0, options->nvl ? 1 : 0, options->bottom_text ? 1 : 0,
+		options->text_speed, options->auto_speed, options->skip_read ? 1 : 0) < 0;
 	if (fclose(file) != 0)
 		failed = 1;
 	if (!failed) {

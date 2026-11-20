@@ -17,6 +17,7 @@ rm -rf "$OUT" && mkdir -p "$(dirname "$OUT")"
 python3 -I "$HERE/add_voices.py" "$ROOT/tools/import_gsenjou.py" "$KS" "$GAME" "$VOICES" "$OUT"
 python3 -I "$HERE/fix_scene.py" "$ROOT/tools/import_gsenjou.py" "$KS" "$HEADS" "$OUT"
 python3 -I "$HERE/chapter_select.py" "$OUT"
+python3 -I "$HERE/normalize_text.py" "$OUT"
 "$CHECK" "$OUT/main.3vs"
 for f in "$OUT"/ch/*.3vs; do cp "$f" "$OUT/_chk.3vs"; "$CHECK" "$OUT/_chk.3vs" >/dev/null || { echo "FAILED: $f"; exit 1; }; done
 rm -f "$OUT/_chk.3vs"

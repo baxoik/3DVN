@@ -12,6 +12,15 @@ int main(int argc, char **argv) {
 	DisplayOptions o;
 	write_file(path, "custom_textbox=1\nnvl=0\n");                      /* old two-line file */
 	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_OK && o.custom_textbox && !o.nvl && !o.bottom_text);
+	assert(o.text_speed == 1 && o.auto_speed == 1 && !o.skip_read);    /* new settings default */
+	write_file(path, "custom_textbox=1\nnvl=0\ntext_speed=3\nskip_read=1\nauto_speed=0\n");
+	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_OK && o.text_speed == 3 && o.auto_speed == 0 && o.skip_read);
+	write_file(path, "custom_textbox=1\nnvl=0\ntext_speed=4\n");    /* out of range */
+	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_MALFORMED);
+	write_file(path, "custom_textbox=1\nnvl=0\nauto_speed=3\n");
+	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_MALFORMED);
+	write_file(path, "custom_textbox=1\nnvl=0\ntext_speed=12\n");
+	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_MALFORMED);
 	write_file(path, "nvl=1\r\nbottom_text=1\r\ncustom_textbox=0\r\n");   /* any order, CRLF */
 	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_OK && !o.custom_textbox && o.nvl && o.bottom_text);
 	write_file(path, "custom_textbox=1\nnvl=0\nbottom_text=1\nbottom_text=0\n"); /* duplicate */
@@ -21,10 +30,11 @@ int main(int argc, char **argv) {
 	write_file(path, "bottom_text=1\nnvl=0\n");                         /* required line missing */
 	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_MALFORMED);
 	unlink(path);
-	DisplayOptions w = {true, false, true};                             /* round trip */
+	DisplayOptions w = {true, false, true, 2, 0, true};                 /* round trip */
 	DisplayOptionsResult r = display_options_save(path, &w);
 	assert(r == DISPLAY_OPTIONS_OK || r == DISPLAY_OPTIONS_SAVED_BACKUP_REMAINS);
 	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_OK && o.custom_textbox && !o.nvl && o.bottom_text);
+	assert(o.text_speed == 2 && o.auto_speed == 0 && o.skip_read);
 	puts("display_options: all tests passed");
 	return 0;
 }

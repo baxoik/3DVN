@@ -219,6 +219,135 @@ static int bottom_text_active(void)
 {
 	return display_options.bottom_text && !display_options.nvl;
 }
+
+/* Text speed and auto-mode pacing from Options. */
+static float text_chars_per_sec(void)
+{
+	static const float speeds[] = {25.0f, 45.0f, 90.0f, 100000.0f};
+	int index = display_options.text_speed;
+	return speeds[index >= 0 && index <= 3 ? index : 1];
+}
+
+static float auto_delay_factor(void)
+{
+	static const float factors[] = {0.5f, 1.0f, 1.7f};
+	int index = display_options.auto_speed;
+	return factors[index >= 0 && index <= 2 ? index : 1];
+}
+
+/* ---------- read lines (for "Fast-forward: Read only") ----------
+   One bit per script position, per script file, saved as settings/<game>.3vread:
+   repeated [u8 name length][name][u32 little-endian byte count][bits]. */
+#define READ_MAX_SCRIPTS 192
+typedef struct {
+	char name[64];
+	unsigned char *bits;
+	int bytes;
+} ReadMap;
+static ReadMap read_maps[READ_MAX_SCRIPTS];
+static int read_map_count, read_dirty;
+
+static ReadMap *read_map(const char *name, int create)
+{
+	for (int index = 0; index < read_map_count; ++index) {
+		if (!strcmp(read_maps[index].name, name)) return &read_maps[index];
+	}
+	if (!create || read_map_count == READ_MAX_SCRIPTS || strlen(name) >= sizeof(read_maps[0].name)) return NULL;
+	ReadMap *map = &read_maps[read_map_count++];
+	snprintf(map->name, sizeof(map->name), "%s", name);
+	map->bits = NULL;
+	map->bytes = 0;
+	return map;
+}
+
+static int line_read(const char *script, int pc)
+{
+	ReadMap *map = read_map(script, 0);
+	return map != NULL && pc >= 0 && pc / 8 < map->bytes && (map->bits[pc / 8] >> (pc % 8) & 1);
+}
+
+static void mark_read(const char *script, int pc)
+{
+	ReadMap *map = read_map(script, 1);
+	if (map == NULL || pc < 0 || line_read(script, pc)) return;
+	if (pc / 8 >= map->bytes) {
+		int bytes = pc / 8 + 64;
+		unsigned char *grown = realloc(map->bits, (size_t)bytes);
+		if (grown == NULL) return;
+		memset(grown + map->bytes, 0, (size_t)(bytes - map->bytes));
+		map->bits = grown;
+		map->bytes = bytes;
+	}
+	map->bits[pc / 8] |= (unsigned char)(1u << (pc % 8));
+	++read_dirty;
+}
+
+static void read_path(char *path, size_t size)
+{
+	snprintf(path, size, SETTINGS_DIR "/%s.3vread", game_name);
+}
+
+static void read_clear(void)
+{
+	for (int index = 0; index < read_map_count; ++index) free(read_maps[index].bits);
+	read_map_count = 0;
+	read_dirty = 0;
+}
+
+static void read_load(void)
+{
+	read_clear();
+	char path[220];
+	read_path(path, sizeof(path));
+	FILE *file = fopen(path, "rb");
+	if (file == NULL) return;
+	int length;
+	while ((length = fgetc(file)) != EOF) {
+		char name[64];
+		unsigned char size[4];
+		if (length >= (int)sizeof(name) || fread(name, 1, (size_t)length, file) != (size_t)length
+			|| fread(size, 1, 4, file) != 4) break;
+		name[length] = '\0';
+		long bytes = size[0] | size[1] << 8 | size[2] << 16 | (long)size[3] << 24;
+		ReadMap *map = bytes > 0 && bytes < (1 << 20) ? read_map(name, 1) : NULL;
+		if (map == NULL || map->bits != NULL) break;
+		map->bits = calloc(1, (size_t)bytes);
+		if (map->bits == NULL || fread(map->bits, 1, (size_t)bytes, file) != (size_t)bytes) break;
+		map->bytes = (int)bytes;
+	}
+	fclose(file);
+	read_dirty = 0;
+}
+
+static void read_save(void)
+{
+	if (!read_dirty || game_name[0] == '\0') return;
+	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST) || (mkdir(SETTINGS_DIR, 0777) != 0 && errno != EEXIST)) return;
+	char path[220], temporary[230];
+	read_path(path, sizeof(path));
+	snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+	FILE *file = fopen(temporary, "wb");
+	if (file == NULL) return;
+	int failed = 0;
+	for (int index = 0; index < read_map_count && !failed; ++index) {
+		const ReadMap *map = &read_maps[index];
+		unsigned char head[4] = {(unsigned char)map->bytes, (unsigned char)(map->bytes >> 8),
+			(unsigned char)(map->bytes >> 16), (unsigned char)(map->bytes >> 24)};
+		size_t length = strlen(map->name);
+		failed = fputc((int)length, file) == EOF || fwrite(map->name, 1, length, file) != length
+			|| fwrite(head, 1, 4, file) != 4 || fwrite(map->bits, 1, (size_t)map->bytes, file) != (size_t)map->bytes;
+	}
+	if (fclose(file) != 0) failed = 1;
+	if (!failed) {
+		remove(path);
+		failed = rename(temporary, path) != 0;
+	}
+	if (failed) {
+		remove(temporary);
+	} else {
+		read_dirty = 0;
+	}
+}
 static int custom_textbox_available, custom_nvl_available;
 static Glossary glossary;
 static int gloss_indices[CFG_MAX_TERMS], gloss_visible_count;
@@ -236,6 +365,8 @@ static float ff_wait;
 static int auto_mode;
 static float auto_wait;
 static int line_voiced;
+static int text_pc;      /* script position of the line on screen (read tracking) */
+static int ff_blocked;   /* R held, but the line is unread and Fast-forward is "Read only" */
 static char gallery_items[MAX_GALLERY_ITEMS][GS_STR_LEN];
 static int gallery_count, gallery_cursor, gallery_detail;
 
@@ -762,7 +893,7 @@ static void load_display_options(void)
 	}
 }
 
-static void toggle_display_option(void)
+static void toggle_display_option(int step)
 {
 	DisplayOptions next = display_options;
 	char path[200];
@@ -774,8 +905,14 @@ static void toggle_display_option(void)
 		next.custom_textbox = !next.custom_textbox;
 	} else if (panel_cursor == 1) {
 		next.nvl = !next.nvl;
-	} else {
+	} else if (panel_cursor == 2) {
 		next.bottom_text = !next.bottom_text;
+	} else if (panel_cursor == 3) {
+		next.text_speed = (next.text_speed + 4 + step) % 4;
+	} else if (panel_cursor == 4) {
+		next.auto_speed = (next.auto_speed + 3 + step) % 3;
+	} else {
+		next.skip_read = !next.skip_read;
 	}
 	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST)
 		|| (mkdir(SETTINGS_DIR, 0777) != 0 && errno != EEXIST)) {
@@ -891,6 +1028,7 @@ static int save_slot(int slot)
 		return 0;
 	}
 	last_slot = slot;
+	read_save();
 	snprintf(notice, sizeof(notice), "Saved to slot %d", slot + 1);
 	return 1;
 }
@@ -904,6 +1042,7 @@ static void show_event(void)
 		advance_visible = 0;
 		auto_wait = 0.0f;
 		line_voiced = audio_sfx_playing();
+		text_pc = state.pc;
 		break;
 	case GS_EV_MENU:
 		waiting = PLAY_MENU;
@@ -1179,6 +1318,7 @@ static char *load_include(const char *name, void *context)
 static int switch_script(const char *name)
 {
 	TEST_LOG("SCRIPT %s", name);
+	read_save();
 	if (strstr(name, "..") != NULL || name[0] == '/' || strchr(name, ':') != NULL) {
 		snprintf(notice, sizeof(notice), "Bad script name");
 		return 0;
@@ -1243,6 +1383,7 @@ static void start_game(const char *name)
 	}
 	load_game_extras();
 	load_display_options();
+	read_load();
 	gs_state_init(program, &state);
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
@@ -2177,21 +2318,29 @@ static void draw_game_menu(void)
 		Z_OVERLAY_TEXT, 0.0f);
 }
 
+#define OPTION_ROWS 6
+
 static void draw_options(void)
 {
 	draw_backdrop(IMG_MENU_BG, 225);
 	draw_line(config.labels[LABEL_OPTIONS], 40, 14, 0.7f, theme_accent(), Z_OVERLAY_TEXT, 320);
-	const char *labels[] = {"Textbox", "Display style", "Text screen"};
-	const char *values[] = {display_options_use_custom(&display_options, current_textbox_available()) ? "Custom" : "Default",
-		display_options.nvl ? "NVL" : "ADV", display_options.bottom_text ? "Bottom" : "Top"};
-	for (int i = 0; i < 3; ++i) {
-		float y = 66.0f + i * 48.0f;
+	static const char *speeds[] = {"Slow", "Normal", "Fast", "Instant"};
+	static const char *waits[] = {"Short", "Normal", "Long"};
+	const char *labels[OPTION_ROWS] = {"Textbox", "Display style", "Text screen", "Text speed", "Auto speed",
+		"Fast-forward"};
+	const char *values[OPTION_ROWS] = {
+		display_options_use_custom(&display_options, current_textbox_available()) ? "Custom" : "Default",
+		display_options.nvl ? "NVL" : "ADV", display_options.bottom_text ? "Bottom" : "Top",
+		speeds[display_options.text_speed & 3], waits[display_options.auto_speed % 3],
+		display_options.skip_read ? "Read only" : "All"};
+	for (int i = 0; i < OPTION_ROWS; ++i) {
+		float y = 46.0f + i * 27.0f;
 		int selected = i == panel_cursor;
-		draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, 40, y, 320, 36,
+		draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, 40, y, 320, 24,
 			selected ? theme_accent() : theme_panel(215), Z_OVERLAY);
 		u32 color = selected && !ui_image(IMG_ITEM_SEL) ? theme_dark_text() : theme_text();
-		draw_line(labels[i], 52, y + 9, 0.5f, color, Z_OVERLAY_TEXT, 155);
-		draw_line(values[i], 216, y + 9, 0.5f, color, Z_OVERLAY_TEXT, 130);
+		draw_line(labels[i], 52, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 155);
+		draw_line(values[i], 216, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 130);
 	}
 	draw_line("A / Left / Right change   B back", 40, 213, 0.4f,
 		C2D_Color32(150, 170, 165, 255), Z_OVERLAY_TEXT, 0.0f);
@@ -2397,7 +2546,9 @@ static void draw_top(C3D_RenderTarget *target)
 		/* Only over an empty screen: games that show their own end card keep it clean. */
 		draw_line("THE END", 150, 100, 0.8f, C2D_Color32(255, 255, 255, 255), Z_TEXT, 0.0f);
 	}
-	if (fast_forward && panel == PANEL_NONE && waiting != PLAY_MENU && waiting != PLAY_END) {
+	if (ff_blocked && panel == PANEL_NONE && waiting == PLAY_TEXT) {
+		draw_line("UNREAD - press A", 272, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
+	} else if (fast_forward && panel == PANEL_NONE && waiting != PLAY_MENU && waiting != PLAY_END) {
 		draw_line(">> FAST FORWARD", 290, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
 	} else if (auto_mode && panel == PANEL_NONE && waiting != PLAY_END) {
 		draw_line("AUTO", 360, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
@@ -2694,6 +2845,7 @@ static void draw_bottom(C3D_RenderTarget *target)
 
 static void leave_game(void)
 {
+	read_save();
 	extras_mode = 0;
 	extras_available = 0;
 	auto_mode = 0;
@@ -2888,13 +3040,15 @@ static void handle_panel_input(u32 down, u32 repeat)
 			break;
 		}
 		if (repeat & KEY_DDOWN) {
-			panel_cursor = (panel_cursor + 1) % 3;
+			panel_cursor = (panel_cursor + 1) % OPTION_ROWS;
 		}
 		if (repeat & KEY_DUP) {
-			panel_cursor = (panel_cursor + 2) % 3;
+			panel_cursor = (panel_cursor + OPTION_ROWS - 1) % OPTION_ROWS;
 		}
-		if (down & (KEY_A | KEY_DLEFT | KEY_DRIGHT)) {
-			toggle_display_option();
+		if (down & (KEY_A | KEY_DRIGHT)) {
+			toggle_display_option(1);
+		} else if (down & KEY_DLEFT) {
+			toggle_display_option(-1);
 		}
 		break;
 	}
@@ -3030,9 +3184,16 @@ static void handle_play_input(u32 down, u32 held, float dt)
 			return;
 		}
 	}
+	/* Bottom-text layout: tapping the dialogue area works like A. */
+	int tap_text = 0;
+	if (bottom_text_active() && (down & KEY_TOUCH) && waiting != PLAY_MENU) {
+		touchPosition touch;
+		hidTouchRead(&touch);
+		tap_text = touch.py < STRIP_Y;
+	}
 	if (ui_hidden) {
 		fast_forward = 0;
-		if (down & KEY_A) {
+		if ((down & KEY_A) || tap_text) {
 			ui_hidden = 0;
 		}
 		return;
@@ -3041,6 +3202,10 @@ static void handle_play_input(u32 down, u32 held, float dt)
 	if (!fast_forward) {
 		ff_wait = 0.0f;
 	}
+	ff_blocked = 0;
+	if (read_dirty >= 64) {
+		read_save();   /* keep progress if the console is switched off mid-chapter */
+	}
 
 	switch (waiting) {
 	case PLAY_TEXT: {
@@ -3048,23 +3213,30 @@ static void handle_play_input(u32 down, u32 held, float dt)
 		for (const char *c = event.text; *c != '\0'; ++c) {
 			total += ((unsigned char)*c & 0xC0) != 0x80;
 		}
-		chars_shown += TEXT_CHARS_PER_SEC * dt;
+		chars_shown += text_chars_per_sec() * dt;
 		if (auto_mode && !line_voiced && audio_sfx_playing()) {
 			line_voiced = 1;
 		}
-		if (fast_forward) {
+		int skipping = fast_forward;
+		if (skipping && display_options.skip_read && !line_read(current_script, text_pc)) {
+			skipping = 0;     /* unread: stop here until the player reads it */
+			ff_blocked = 1;
+		}
+		if (skipping) {
 			chars_shown = (float)total;
 			ff_wait += dt;
 			if (ff_wait >= FF_STEP) {
 				ff_wait = 0.0f;
 				audio_stop_sfx();
+				mark_read(current_script, text_pc);
 				waiting = PLAY_NONE;
 			}
-		} else if (down & KEY_A) {
+		} else if ((down & KEY_A) || tap_text) {
 			if (chars_shown < (float)total) {
 				chars_shown = (float)total;
 			} else {
 				audio_stop_sfx();
+				mark_read(current_script, text_pc);
 				waiting = PLAY_NONE;
 			}
 		} else if (auto_mode && chars_shown >= (float)total) {
@@ -3078,8 +3250,10 @@ static void handle_play_input(u32 down, u32 held, float dt)
 				if (delay > AUTO_DELAY_MAX) {
 					delay = AUTO_DELAY_MAX;
 				}
+				delay *= auto_delay_factor();
 				auto_wait += dt;
 				if (auto_wait >= delay) {
+					mark_read(current_script, text_pc);
 					waiting = PLAY_NONE;
 				}
 			}
