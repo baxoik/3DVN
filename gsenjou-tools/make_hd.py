@@ -23,6 +23,9 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument("game")
 parser.add_argument("decoded")
 parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
+parser.add_argument("--min-redrawn", type=float, default=0.4,
+                    help="minimum correlation for a background redrawn for widescreen; its closest "
+                         "4:3 area is used (backgrounds only; all G-Senjou ones score 0.45+)")
 parser.add_argument("--min-match", type=float, default=0.9,
                     help="minimum correlation (0..1) between the small image and the found crop of the "
                          "original, compared at quarter resolution; correct matches score 0.92+, "
@@ -222,10 +225,16 @@ def job(item):
             # Reframed picture (the 4:3 version shows more than the 16:9 original):
             # place the original where it lines up and fill the rest from the small image.
             placed = place(whole, small)
-            if placed is None:
+            if placed is not None:
+                hd, coverage = placed
+                status = "ok, reframed"
+            elif os.path.basename(rel).startswith("bg_") and similarity(hd, small) >= args.min_redrawn:
+                # Background redrawn for widescreen (objects moved or added): use the
+                # closest 4:3 area of the new drawing. Not for CGs, where that area is
+                # only part of a close-up.
+                status = "ok, redrawn"
+            else:
                 return kind, "different"
-            hd, coverage = placed
-            status = "ok, reframed"
         else:
             status = "ok"
         os.makedirs(os.path.dirname(target), exist_ok=True)
