@@ -154,7 +154,13 @@ GAME=voiced/g-senjou-no-maou CORE=azahar_libretro.so ENGINE=3dvn-autotest.3dsx \
 
 Each run leaves `result.txt`, `test.log` and sample screenshots in
 `emu/runs/<chapter>/`. The emulator has no DSP firmware, so it runs without
-sound, and "no audio" notices are expected.
+sound, and "no audio" notices are expected. With `PACK=path/to/game.3vp` the
+chapter plays from the archive instead of the folder (results in
+`emu/runs-pack/<chapter>/`), which tests the archive reading code too.
+
+`tests/walk_story.c` plays a whole game through the script VM many times with
+random choices (no emulator needed) and reports script errors, missing images
+and sounds, endless loops and which chapters are reached.
 
 ---
 

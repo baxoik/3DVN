@@ -6,17 +6,24 @@
 #   GAME     converted game folder (with main.3vs, ch/, bg/, sprites/, audio/ ...)
 #   CORE     azahar_libretro.so from an Azahar release (libretro, Linux x86_64)
 #   ENGINE   3dvn.3dsx built with: make EXTRA_CFLAGS=-DAUTOTEST
+#   PACK     optional: play from this .3vp archive instead (GAME still provides
+#            main.3vs for the chapter flags); results go to runs-pack/CHAPTER/
 set -e
 CH=$1
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${GAME:?set GAME}" "${CORE:?set CORE}" "${ENGINE:?set ENGINE}"
 W="$HERE/runs/$CH"
+[ -n "$PACK" ] && W="$HERE/runs-pack/$CH"
 rm -rf "$W"
 G="$W/Azahar/sdmc/3ds/3dvn/games/zz-test"
 mkdir -p "$G"
-for f in bg sprites audio ch ui gallery game.3vc characters.3vs extras.3vs; do
-	[ -e "$GAME/$f" ] && ln -s "$GAME/$f" "$G/$f"
-done
+if [ -n "$PACK" ]; then
+	ln -s "$PACK" "$G.3vp"   # the folder next to it only overrides main.3vs
+else
+	for f in bg sprites audio ch ui gallery game.3vc characters.3vs extras.3vs; do
+		[ -e "$GAME/$f" ] && ln -s "$GAME/$f" "$G/$f"
+	done
+fi
 # Start the chapter the way the chapter-select menu does (same flag lines), if it has one.
 { echo 'set nonero = 0'
   awk -v t="script \"ch/$CH\"" '/^  choice /{body=""; next} /^    /{sub(/^    /,""); body=body $0 "\n"; if ($0==t) {printf "%s", body; exit}}' "$GAME/main.3vs"
