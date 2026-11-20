@@ -94,9 +94,11 @@ python3 gsenjou-tools/make_hd.py voiced/g-senjou-no-maou decoded
 The 3DS images are scaled-down crops of the originals (other 4:3 framing for
 backgrounds, upper bodies of full-length sprites), so each one is located in its
 original by template matching over scale and position, and accepted only if the
-match correlates well. CGs whose 4:3 version shows more than the 16:9 original
-(zoomed-out compositions) and cut-ins keep their small image. With the Steam release
-about 1,770 images get HD versions (all sprites and faces, half the backgrounds). Then pack two archives: with `hd/` for PC / Wii U, and
+match correlates well. Where the 4:3 version shows more than the 16:9 original
+(most CGs are zoomed out compared with Steam), the original is placed where it lines
+up and blended into the upscaled small image, which fills only the uncovered border.
+Cut-ins keep their small image. With the Steam release about 1,970 images get HD
+versions: all sprites and faces and 257 of 305 backgrounds and CGs. Then pack two archives: with `hd/` for PC / Wii U, and
 `--exclude hd` for the 3DS.
 
 ## Pack it (optional, recommended)
