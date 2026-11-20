@@ -2383,7 +2383,9 @@ static void draw_top(C3D_RenderTarget *target)
 	} else if (ui_hidden) {
 		return;
 	} else if (waiting == PLAY_MENU) {
-		draw_choices();
+		if (!bottom_text_active()) {
+			draw_choices();
+		}
 	} else if (waiting == PLAY_TEXT) {
 		if (!bottom_text_active()) {
 			draw_textbox();
@@ -2416,6 +2418,21 @@ static const Button play_buttons[] = {
 #define AUTO_BUTTON 4
 /* Slim strip along the bottom edge when the dialogue is shown on the bottom screen. */
 #define STRIP_Y 208.0f
+/* Bottom-screen choice buttons in the bottom-text layout: stacked in the area above
+   the strip, as tall as fits (at most 40 px each) and centred vertically. */
+static int choice_buttons(Button *out)
+{
+	int count = event.choice_count;
+	if (count <= 0) return 0;
+	const float top = 8.0f, bottom = STRIP_Y - 8.0f, gap = 4.0f;
+	float h = fminf(40.0f, (bottom - top - gap * (float)(count - 1)) / (float)count);
+	float y = top + ((bottom - top) - (h * (float)count + gap * (float)(count - 1))) / 2.0f;
+	for (int index = 0; index < count; ++index, y += h + gap) {
+		out[index] = (Button){8.0f, y, BOTTOM_W - 16.0f, h, event.choices[index]};
+	}
+	return count;
+}
+
 static const Button strip_buttons[] = {
 	{4, 208, 60, 28, "Menu"},
 	{68, 208, 60, 28, "Log"},
@@ -2463,8 +2480,28 @@ static void draw_bottom_dialogue(void)
 		return;
 	}
 	if (waiting == PLAY_MENU) {
-		draw_line("Choose on the top screen", 12, 12, 0.5f, theme_accent(), Z_TEXT, 0.0f);
-		draw_line("D-pad choose   A confirm", 12, 36, 0.45f, dim, Z_TEXT, 0.0f);
+		Button buttons[GS_MAX_CHOICES];
+		int count = choice_buttons(buttons);
+		for (int index = 0; index < count; ++index) {
+			const Button *b = &buttons[index];
+			int selected = index == menu_cursor;
+			int skinned = ui_image(selected ? IMG_CHOICE_SEL : IMG_CHOICE) != NULL;
+			draw_panel(selected ? IMG_CHOICE_SEL : IMG_CHOICE, b->x, b->y, b->w, b->h,
+				selected ? theme_accent() : theme_item(), Z_BOX + 0.01f);
+			if (!selected) {
+				/* Light tint and outline so the buttons read as tappable in any theme. */
+				const u32 tint = C2D_Color32(255, 255, 255, 22), edge = C2D_Color32(255, 255, 255, 70);
+				rect(b->x, b->y, b->w, b->h, tint, Z_BOX + 0.015f);
+				rect(b->x, b->y, b->w, 1.0f, edge, Z_BOX + 0.016f);
+				rect(b->x, b->y + b->h - 1.0f, b->w, 1.0f, edge, Z_BOX + 0.016f);
+				rect(b->x, b->y, 1.0f, b->h, edge, Z_BOX + 0.016f);
+				rect(b->x + b->w - 1.0f, b->y, 1.0f, b->h, edge, Z_BOX + 0.016f);
+			}
+			float scale = fminf(0.5f, b->h / 44.0f);
+			draw_line(b->label, b->x + 10.0f, b->y + (b->h - 30.0f * scale) / 2.0f, scale,
+				selected && !skinned ? theme_dark_text() : theme_text(), Z_TEXT, b->w - 20.0f);
+		}
+		(void)dim;
 		return;
 	}
 	if (waiting != PLAY_TEXT) {
@@ -3058,7 +3095,18 @@ static void handle_play_input(u32 down, u32 held, float dt)
 				menu_cursor = (menu_cursor + event.choice_count - 1) % event.choice_count;
 			}
 		}
-		if ((down & KEY_A) && menu_cursor < event.choice_count) {
+		int touched = 0;
+		if (bottom_text_active() && (down & KEY_TOUCH)) {
+			touchPosition touch;
+			hidTouchRead(&touch);
+			Button buttons[GS_MAX_CHOICES];
+			int hit = hit_button(buttons, choice_buttons(buttons), &touch);
+			if (hit >= 0) {
+				menu_cursor = hit;
+				touched = 1;
+			}
+		}
+		if (((down & KEY_A) || touched) && menu_cursor < event.choice_count) {
 			char entry[GS_STR_LEN + 4];
 			snprintf(entry, sizeof(entry), "> %s", event.choices[menu_cursor]);
 			if (gs_choose(program, &state, menu_cursor)) {
