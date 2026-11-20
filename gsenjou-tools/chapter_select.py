@@ -3,7 +3,8 @@
 
 usage: chapter_select.py GAME_DIR
 The adult-scene question stays first; then the player can start from the
-beginning or jump to any chapter. Menus hold at most 8 choices, so long lists
+beginning or jump to any chapter. Menus have no heading line (it would need an
+extra press and disappears when the choices show). Menus hold at most 8 choices, so long lists
 are split into pages of 7 plus "Back".
 """
 import os, sys
@@ -69,7 +70,6 @@ def page_menu(name, items, back):
     labels = [label() for _ in pages]
     for n, (lab, page) in enumerate(zip(labels, pages)):
         out.append(f"label {lab}")
-        out.append(f'"{name}' + (f" ({n + 1}/{len(pages)})" if len(pages) > 1 else "") + '"')
         out.append("menu")
         for text, line in page:
             out.append(f'  choice "{text}"')
@@ -92,7 +92,6 @@ def group_menu(name, stems, back, size):
         entries.append((f"Chapters {int(g[0][1:])}-{int(g[-1][1:])}", f"jump {lab}"))
         pending.append((lab, g))
     out.append(f"label {me}")
-    out.append(f'"{name}"')
     out.append("menu")
     for text, line in entries:
         out.append(f'  choice "{text}"')
@@ -125,7 +124,6 @@ for half in halves:
 route_entries = [(name, parts) for name, parts in routes]
 route_top = label()
 out.append(f"label {route_top}")
-out.append('"Heroine routes"')
 out.append("menu")
 route_labels = []
 for name, parts in route_entries:
@@ -142,7 +140,7 @@ for lab, name, parts in route_labels:
     out.append(f"jump {first}")
 submenus = out[body_start:]
 
-top = ["label cs_top", '"Where do you want to start?"', "menu"]
+top = ["label cs_top", "menu"]
 for text, line in top_entries + [(t, f"jump {l}") for t, l in half_labels] + [("Heroine routes", f"jump {route_top}")]:
     top += [f'  choice "{text}"', f"    {line}"]
 top.append("end")

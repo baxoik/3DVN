@@ -2966,6 +2966,13 @@ static void draw_bottom(C3D_RenderTarget *target)
 		}
 		return;
 	}
+	if (waiting == PLAY_MENU && !ui_hidden && event.choice_count > 0) {
+		/* Choices (story choices, chapter select) also as touch buttons here, in sync
+		   with the list on the top screen. */
+		draw_choice_buttons();
+		draw_line("Tap a choice, or D-pad + A", 14, 216, 0.42f, dim, Z_TEXT, 0.0f);
+		return;
+	}
 	draw_line(game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
 	for (int index = 0; index < COUNT_OF(play_buttons); ++index) {
 		draw_button_box(&play_buttons[index], index == AUTO_BUTTON && auto_mode);
@@ -3336,6 +3343,7 @@ static void handle_play_input(u32 down, u32 held, float dt)
 		hidTouchRead(&touch);
 		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT, PANEL_NONE};
 		int button = touch_layout_active() ? hit_button(strip_buttons, COUNT_OF(strip_buttons), &touch)
+			: waiting == PLAY_MENU && !ui_hidden && event.choice_count > 0 ? -1   /* choices own the screen */
 			: hit_button(play_buttons, COUNT_OF(play_buttons), &touch);
 		if (button == 2) {
 			ui_hidden = !ui_hidden;
@@ -3437,7 +3445,7 @@ static void handle_play_input(u32 down, u32 held, float dt)
 			}
 		}
 		int touched = 0;
-		if (touch_layout_active() && (down & KEY_TOUCH)) {
+		if (down & KEY_TOUCH) {
 			touchPosition touch;
 			hidTouchRead(&touch);
 			Button buttons[GS_MAX_CHOICES];
