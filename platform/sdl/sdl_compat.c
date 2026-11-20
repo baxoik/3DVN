@@ -114,7 +114,11 @@ void gfxInitDefault(void)
 		renderer_flags = SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE;
 	}
 #ifdef __WIIU__
-	outputs[0].window = SDL_CreateWindow("3DVN", 0, 0, 1280, 720, SDL_WINDOW_WIIU_TV_ONLY);
+	/* One GX2 swap updates TV and GamePad together. Presenting each window would swap twice
+	   per frame (each screen alternating between new and stale buffers: flicker), so the TV
+	   window never swaps and the GamePad window, presented last, swaps both. */
+	outputs[0].window = SDL_CreateWindow("3DVN", 0, 0, 1280, 720,
+		SDL_WINDOW_WIIU_TV_ONLY | SDL_WINDOW_WIIU_PREVENT_SWAP);
 	outputs[1].window = SDL_CreateWindow("3DVN", 0, 0, 854, 480, SDL_WINDOW_WIIU_GAMEPAD_ONLY);
 	output_count = 2;
 	targets[GFX_TOP] = (C3D_RenderTarget){GFX_TOP, 0, TOP_SCALE, TOP_W, TOP_H, NULL, {0}, 0};
@@ -137,7 +141,11 @@ void gfxInitDefault(void)
 			boot_log("SDL_CreateWindow %d failed: %s", i, SDL_GetError());
 			exit(1);
 		}
-		outputs[i].renderer = SDL_CreateRenderer(outputs[i].window, -1, renderer_flags);
+		Uint32 flags = renderer_flags;
+#ifdef __WIIU__
+		if (i == 0) flags &= ~(Uint32)SDL_RENDERER_PRESENTVSYNC;   /* only the swapping window waits */
+#endif
+		outputs[i].renderer = SDL_CreateRenderer(outputs[i].window, -1, flags);
 		if (outputs[i].renderer == NULL) {
 			outputs[i].renderer = SDL_CreateRenderer(outputs[i].window, -1,
 				SDL_RENDERER_SOFTWARE | SDL_RENDERER_TARGETTEXTURE);

@@ -2806,6 +2806,57 @@ static void draw_quit_confirm(void)
 	draw_line("A  Yes        B  No", 70, 140, 0.5f, theme_text(), Z_OVERLAY_TEXT, TOP_W - 140);
 }
 
+/* Menus as touch buttons on the bottom screen (title menu, in-game menu): `count` item
+   rows under a header, plus one `extra` button (Game list / Close) at the bottom edge. */
+#define LIST_EXTRA_Y 204.0f
+static int touch_list_buttons(Button *out, const char *const *labels, int count, const char *extra)
+{
+	const float top = 34.0f, bottom = LIST_EXTRA_Y - 8.0f, gap = 5.0f;
+	float h = count > 0 ? fminf(34.0f, (bottom - top - gap * (float)(count - 1)) / (float)count) : 0.0f;
+	for (int index = 0; index < count; ++index) {
+		out[index] = (Button){20.0f, top + (float)index * (h + gap), BOTTOM_W - 40.0f, h, labels[index]};
+	}
+	out[count] = (Button){20.0f, LIST_EXTRA_Y, BOTTOM_W - 40.0f, 30.0f, extra};
+	return count + 1;
+}
+
+static void draw_touch_list(const char *header, const char *const *labels, int count, int cursor,
+	const char *extra)
+{
+	Button buttons[LABEL_COUNT + 2];
+	int total = touch_list_buttons(buttons, labels, count, extra);
+	draw_line(header, 20, 6, 0.6f, theme_accent(), Z_TEXT, BOTTOM_W - 40);
+	for (int index = 0; index < total; ++index) {
+		const Button *b = &buttons[index];
+		int selected = index == cursor;
+		draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, b->x, b->y, b->w, b->h,
+			selected ? theme_accent() : theme_item(), Z_BOX);
+		if (!selected) {
+			const u32 tint = C2D_Color32(255, 255, 255, 22), edge = C2D_Color32(255, 255, 255, 70);
+			rect(b->x, b->y, b->w, b->h, tint, Z_BOX + 0.005f);
+			rect(b->x, b->y, b->w, 1.0f, edge, Z_BOX + 0.006f);
+			rect(b->x, b->y + b->h - 1.0f, b->w, 1.0f, edge, Z_BOX + 0.006f);
+		}
+		float scale = fminf(0.55f, b->h / 42.0f);
+		draw_line(b->label, b->x + 12.0f, b->y + (b->h - 30.0f * scale) / 2.0f, scale,
+			selected && !ui_image(IMG_ITEM_SEL) ? theme_dark_text() : theme_text(), Z_TEXT, b->w - 24.0f);
+	}
+}
+
+static const char *title_item_label(int item);
+
+static int title_touch_labels(const char **labels)
+{
+	for (int index = 0; index < title_count; ++index) labels[index] = title_item_label(title_items[index]);
+	return title_count;
+}
+
+static int menu_touch_labels(const char **labels)
+{
+	for (int index = 0; index < menu_count; ++index) labels[index] = config.labels[menu_items[index]];
+	return menu_count;
+}
+
 static void draw_bottom(C3D_RenderTarget *target)
 {
 	C2D_TargetClear(target, config.has_bg ? rgb_color(config.bg, 255) : C2D_Color32(17, 29, 34, 255));
@@ -2838,6 +2889,16 @@ static void draw_bottom(C3D_RenderTarget *target)
 			14, 224, 0.4f, dim, Z_TEXT, 0.0f);
 		return;
 	}
+	if (mode == MODE_TITLE && panel == PANEL_NONE) {
+		const char *labels[8];
+		int count = title_touch_labels(labels);
+		draw_touch_list(config.title[0] != '\0' ? config.title : game_name, labels, count, title_cursor,
+			"Game list");
+		if (notice[0] != '\0') {
+			draw_line(notice, 20, LIST_EXTRA_Y - 18.0f, 0.42f, C2D_Color32(255, 200, 120, 255), Z_TEXT, BOTTOM_W - 40);
+		}
+		return;
+	}
 	if (mode == MODE_TITLE) {
 		draw_line(config.title[0] != '\0' ? config.title : game_name,
 			14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
@@ -2868,6 +2929,13 @@ static void draw_bottom(C3D_RenderTarget *target)
 		return;
 	}
 
+	if (panel == PANEL_MENU) {
+		const char *labels[LABEL_COUNT];
+		int count = menu_touch_labels(labels);
+		draw_touch_list(config.menu_title[0] != '\0' ? config.menu_title : "Menu", labels, count,
+			menu_cursor_item, "Close");
+		return;
+	}
 	if (panel != PANEL_NONE) {
 		draw_line(game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
 		draw_line("Menu is on the top screen", 14, 40, 0.45f, dim, Z_TEXT, 0.0f);
@@ -2992,6 +3060,8 @@ static void choose_title_item(void)
 	}
 }
 
+static int hit_button(const Button *buttons, int count, const touchPosition *touch);
+
 static void handle_title_input(u32 down, u32 repeat)
 {
 	if (down & KEY_B) {
@@ -3006,6 +3076,21 @@ static void handle_title_input(u32 down, u32 repeat)
 	}
 	if (down & KEY_A) {
 		choose_title_item();
+		return;
+	}
+	if (down & KEY_TOUCH) {
+		touchPosition touch;
+		hidTouchRead(&touch);
+		const char *labels[8];
+		Button buttons[10];
+		int count = title_touch_labels(labels);
+		int hit = hit_button(buttons, touch_list_buttons(buttons, labels, count, "Game list"), &touch);
+		if (hit >= 0 && hit < count) {
+			title_cursor = hit;
+			choose_title_item();
+		} else if (hit == count) {
+			leave_game();
+		}
 	}
 }
 
@@ -3057,6 +3142,19 @@ static void handle_panel_input(u32 down, u32 repeat)
 			choose_menu_item(menu_cursor_item);
 		} else if (down & (KEY_B | KEY_X)) {
 			close_panel();
+		} else if (down & KEY_TOUCH) {
+			touchPosition touch;
+			hidTouchRead(&touch);
+			const char *labels[LABEL_COUNT];
+			Button buttons[LABEL_COUNT + 2];
+			int count = menu_touch_labels(labels);
+			int hit = hit_button(buttons, touch_list_buttons(buttons, labels, count, "Close"), &touch);
+			if (hit >= 0 && hit < count) {
+				menu_cursor_item = hit;
+				choose_menu_item(hit);
+			} else if (hit == count) {
+				close_panel();
+			}
 		}
 		break;
 	}

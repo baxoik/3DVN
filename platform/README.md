@@ -11,7 +11,8 @@ rendered off-screen at a higher resolution (text stays sharp) and shown:
 
 - **PC:** both in one window, top above bottom (2x by default, `VN_SCALE=3` etc.).
 - **Wii U:** top screen on the **TV** (1200x720), bottom screen on the **GamePad**
-  (640x480). With Options → Text screen → "Top, choices below", the TV shows the
+  (640x480). One GX2 swap updates both screens, so only the GamePad window swaps
+  (the TV window uses SDL_WINDOW_WIIU_PREVENT_SWAP); swapping per window flickers. With Options → Text screen → "Top, choices below", the TV shows the
   scene and dialogue and the GamePad holds the controls and tappable choices.
 
 Games are the same folders as on the 3DS (`<root>/games/<name>/main.3vs` ...).
@@ -45,10 +46,12 @@ Copy `3dvn.wuhb` to `sd:/wiiu/apps/` and games to `sd:/wiiu/3dvn/games/<name>/`
 `font.ttf` in `sd:/wiiu/3dvn/`. Buttons follow the GamePad labels (A, B, X, Y, L,
 R/ZR, + = START, − = SELECT); the GamePad touchscreen works for touch.
 
-**Status:** builds, but not yet confirmed running. In Cemu 2.6 the app (and even a
-minimal wut test program) loaded but produced no output or SD-card access in this
-setup, so it still needs a check on a real console or a working Cemu setup.
-`sd:/wiiu/3dvn/boot.log` (also sent to `OSReport`) traces start-up.
+**Status:** runs in Cemu 2.6 (game list, title, chapters on TV + GamePad, no
+flicker). Cemu note: on Linux set Options → General → Audio API to **Cubeb**; with
+the Windows-only default, Cemu hangs every homebrew title before its first frame.
+Not yet checked on a real console. `sd:/wiiu/3dvn/boot.log` (also sent to
+`OSReport`) traces start-up. Screenshots from the test hook (`shot`) come out
+garbled on Wii U (pixel readback format); they are fine on PC.
 
 ## Unattended tests (PC and Wii U)
 
