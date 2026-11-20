@@ -41,7 +41,9 @@ the `devkitpro/devkitppc` container image).
 cmake --build build-wiiu                  # -> build-wiiu/3dvn.wuhb (and 3dvn.rpx)
 ```
 
-Copy `3dvn.wuhb` to `sd:/wiiu/apps/` and games to `sd:/wiiu/3dvn/games/<name>/`
+Copy `3dvn.wuhb` to `sd:/wiiu/apps/` (or `3dvn.rpx` plus `platform/wiiu/hbl-icon.png`
+renamed to `icon.png` into `sd:/wiiu/apps/3dvn/` for the Homebrew Launcher) and games to
+`sd:/wiiu/3dvn/games/<name>/`
 (Aroma environment). The console's own font is used; if it can't be read, put a
 `font.ttf` in `sd:/wiiu/3dvn/`. Buttons follow the GamePad labels (A, B, X, Y, L,
 R/ZR, + = START, − = SELECT); the GamePad touchscreen works for touch.

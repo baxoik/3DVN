@@ -24,6 +24,9 @@ parser.add_argument("--voice-quality", type=float, default=2.0, help="Vorbis qua
 parser.add_argument("--music-quality", type=float, default=4.0, help="Vorbis quality for other audio (default 4)")
 parser.add_argument("--cache", default=None)
 parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
+parser.add_argument("--audio-originals", action="append", default=[], metavar="DIR",
+                    help="folder(s) of original .ogg files (searched recursively): a sound with an "
+                         "original of the same name uses it unchanged instead of being converted")
 parser.add_argument("--exclude", action="append", default=[], metavar="FOLDER",
                     help="leave out a top-level folder, e.g. --exclude hd for a 3DS archive")
 args = parser.parse_args()
@@ -59,8 +62,23 @@ def convert(job):
     return rel, target
 
 
+originals = {}
+for root_dir in args.audio_originals:
+    for folder, _, names in os.walk(root_dir):
+        for name in names:
+            if name.lower().endswith(".ogg"):
+                originals.setdefault(name[:-4].lower(), os.path.join(folder, name))
+if originals:
+    replaced = 0
+    for i, (rel, path) in enumerate(files):
+        stem = os.path.splitext(os.path.basename(rel))[0].lower()
+        if rel.startswith("audio/") and rel.endswith(".wav") and stem in originals:
+            files[i] = (rel[:-4] + ".ogg", originals[stem])
+            replaced += 1
+    print(f"  {replaced} sounds use their original .ogg unchanged", flush=True)
+
 if args.ogg:
-    wavs = [(rel, path) for rel, path in files if rel.startswith(("audio/", "hd/audio/")) and rel.endswith(".wav")]
+    wavs = [(rel, path) for rel, path in files if rel.startswith("audio/") and rel.endswith(".wav")]
     converted = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for done, (rel, target) in enumerate(pool.map(convert, wavs), 1):

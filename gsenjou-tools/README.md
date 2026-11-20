@@ -97,7 +97,17 @@ cut-ins are skipped. Then pack two archives: with `hd/` for PC / Wii U, and
 python3 tools/make_pack.py voiced/g-senjou-no-maou g-senjou-no-maou.3vp --ogg
 ```
 
-One 352 MB file (Ogg audio) instead of 2.2 GB in about 16,000 files. Put it in
+One 352 MB file (Ogg audio) instead of 2.2 GB in about 16,000 files.
+
+For PC and Wii U, use the original audio from your copy unchanged (48 kHz voices,
+44.1 kHz stereo music) instead of the 3DS-sized conversions:
+
+```sh
+python3 tools/make_pack.py voiced/g-senjou-no-maou g-senjou-no-maou.3vp --ogg \
+  --audio-originals path/to/voice --audio-originals path/to/bgm --audio-originals path/to/sound
+```
+
+(795 MB; the 3DS archive keeps the smaller converted audio, which is easier to decode.) Put it in
 `<3dvn root>/games/` instead of the folder. It works on 3DS, Wii U and PC.
 
 ## Get it onto the 3DS

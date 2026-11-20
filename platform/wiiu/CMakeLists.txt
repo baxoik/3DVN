@@ -19,4 +19,6 @@ wut_create_rpx(3dvn)
 wut_create_wuhb(3dvn
 	NAME "3DVN"
 	SHORTNAME "3DVN"
-	AUTHOR "3DVN")
+	AUTHOR "3DVN"
+	ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.png")
+# Homebrew Launcher: copy hbl-icon.png as icon.png next to 3dvn.rpx (sd:/wiiu/apps/3dvn/).
