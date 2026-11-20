@@ -1697,6 +1697,41 @@ static void draw_line(const char *text, float x, float y, float scale, u32 color
 	C2D_DrawText(&parsed, C2D_WithColor, x, y, z, scale, scale, color);
 }
 
+/* Largest scale (at most `scale`, at least 60% of it) at which the whole text wraps
+   into `height` pixels, so long lines never run off the bottom of the text box. */
+static float fit_text_scale(const char *text, float width, float height, float scale)
+{
+	static unsigned short starts[GS_TEXT_LEN], ends[GS_TEXT_LEN];
+	static char cached_text[GS_TEXT_LEN];
+	static float cached_width, cached_height, cached_scale, cached_result;
+	if (cached_width == width && cached_height == height && cached_scale == scale
+		&& !strncmp(cached_text, text, sizeof(cached_text))) {
+		return cached_result;
+	}
+	float previous_scale = measure_scale;
+	float fitted = scale;
+	for (int step = 0; step < 10; ++step) {
+		measure_scale = fitted;
+		int count = wrap_text_lines(text, width, measure_text, NULL, starts, ends, GS_TEXT_LEN);
+		C2D_Text metric;
+		float line_height;
+		C2D_TextBufClear(measure_buf);
+		C2D_TextFontParse(&metric, font, measure_buf, "Ag");
+		C2D_TextGetDimensions(&metric, fitted, fitted, NULL, &line_height);
+		if (count * line_height <= height || fitted <= scale * 0.6f) {
+			break;
+		}
+		fitted = fmaxf(scale * 0.6f, fitted * 0.94f);
+	}
+	measure_scale = previous_scale;
+	snprintf(cached_text, sizeof(cached_text), "%s", text);
+	cached_width = width;
+	cached_height = height;
+	cached_scale = scale;
+	cached_result = fitted;
+	return fitted;
+}
+
 static void draw_dialogue_with_advance(const char *text, float x, float y, float width,
 	float scale, u32 color, Picture *picture, int complete)
 {
@@ -2002,6 +2037,9 @@ static void draw_textbox(void)
 	const char *visible_text = shown;
 	if (config.num[NUM_NVL_ACCUMULATE] && !display_options.nvl) {
 		while (*visible_text == '\n' || *visible_text == '\r') ++visible_text;
+	}
+	if (!display_options.nvl) {
+		scale = fit_text_scale(event.text, width, bh - text_y - 4.0f, scale);
 	}
 	Picture *advance = advance_available ? ui_image(IMG_ADVANCE) : NULL;
 	if (advance != NULL) {
