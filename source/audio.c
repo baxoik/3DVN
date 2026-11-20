@@ -44,9 +44,11 @@ typedef struct {
 	stb_vorbis *vorbis;            /* Ogg: streamed through two small buffers */
 	ndspWaveBuf buffers[SFX_STREAM_BUFFERS];
 	int channels, finished;
+	int voice;                     /* from audio/v/: follows the voice volume */
 } Sfx;
 
 static int ready;
+static float master_gain = 1.0f, music_gain = 1.0f, voice_gain = 1.0f;
 static Music music;
 static Sfx sfx[SFX_SLOTS];
 static int next_sfx;
@@ -81,6 +83,33 @@ static void set_volume(int channel, float volume)
 	mix[0] = volume;
 	mix[1] = volume;
 	ndspChnSetMix(channel, mix);
+}
+
+static float music_level(void)
+{
+	return music.volume * master_gain * music_gain;
+}
+
+static float sfx_level(int voice)
+{
+	return master_gain * (voice ? voice_gain : 1.0f);
+}
+
+void audio_set_volumes(float master, float music_volume, float voice)
+{
+	master_gain = master;
+	music_gain = music_volume;
+	voice_gain = voice;
+	if (!ready) return;
+	if (music.active) set_volume(MUSIC_CHANNEL, music_level());
+	for (int index = 0; index < SFX_SLOTS; ++index) {
+		set_volume(SFX_FIRST + index, sfx_level(sfx[index].voice));
+	}
+}
+
+static int is_voice_path(const char *path)
+{
+	return strstr(path, "/audio/v/") != NULL || strncmp(path, "audio/v/", 8) == 0;
 }
 
 void audio_init(void)
@@ -345,7 +374,7 @@ int audio_play_music(const char *path, float fade_seconds, char *err, int err_si
 	ndspChnSetInterp(MUSIC_CHANNEL, NDSP_INTERP_LINEAR);
 	ndspChnSetRate(MUSIC_CHANNEL, (float)info.rate);
 	ndspChnSetFormat(MUSIC_CHANNEL, ndsp_format(&info));
-	set_volume(MUSIC_CHANNEL, music.volume);
+	set_volume(MUSIC_CHANNEL, music_level());
 	feed_music();
 	return 1;
 }
@@ -419,10 +448,11 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 		slot->memory = buffers;
 		slot->vorbis = vorbis;
 		slot->channels = info.channels;
+		slot->voice = is_voice_path(path);
 		ndspChnSetInterp(channel, NDSP_INTERP_LINEAR);
 		ndspChnSetRate(channel, (float)info.rate);
 		ndspChnSetFormat(channel, ndsp_format(&info));
-		set_volume(channel, 1.0f);
+		set_volume(channel, sfx_level(slot->voice));
 		feed_sfx(slot, channel);
 		return 1;
 	}
@@ -483,10 +513,11 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 	slot->buffer.data_vaddr = memory;
 	slot->buffer.nsamples = (u32)(info.data_size / info.frame_size);
 	DSP_FlushDataCache(memory, (size_t)info.data_size);
+	slot->voice = is_voice_path(path);
 	ndspChnSetInterp(channel, NDSP_INTERP_LINEAR);
 	ndspChnSetRate(channel, (float)info.rate);
 	ndspChnSetFormat(channel, ndsp_format(&info));
-	set_volume(channel, 1.0f);
+	set_volume(channel, sfx_level(slot->voice));
 	ndspChnWaveBufAdd(channel, &slot->buffer);
 	return 1;
 }
@@ -511,7 +542,7 @@ void audio_update(float dt)
 		} else {
 			music.volume = music.volume - step < music.target ? music.target : music.volume - step;
 		}
-		set_volume(MUSIC_CHANNEL, music.volume);
+		set_volume(MUSIC_CHANNEL, music_level());
 	}
 	if (music.stopping && music.volume <= 0.0f) {
 		close_music();

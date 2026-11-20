@@ -29,6 +29,9 @@ void display_options_defaults(DisplayOptions *options)
 	options->auto_speed = 1;
 	options->skip_read = false;
 	options->touch_choices = false;
+	options->master_volume = 10;
+	options->music_volume = 10;
+	options->voice_volume = 10;
 }
 
 bool display_options_use_custom(const DisplayOptions *options, bool available)
@@ -42,11 +45,33 @@ void display_options_apply_game_default(DisplayOptions *options, DisplayOptionsR
 		options->nvl = default_nvl;
 }
 
+/* "master_volume=N" etc. with N 0..10, each at most once. */
+static int parse_volume(const char *line, int seen[3], DisplayOptions *parsed)
+{
+	static const char *const keys[3] = {"master_volume=", "music_volume=", "voice_volume="};
+	for (int k = 0; k < 3; ++k) {
+		size_t length = strlen(keys[k]);
+		if (seen[k] || strncmp(line, keys[k], length) != 0) continue;
+		const char *value = line + length;
+		int number;
+		if (value[0] >= '0' && value[0] <= '9' && value[1] == '\0') number = value[0] - '0';
+		else if (strcmp(value, "10") == 0) number = 10;
+		else return 0;
+		if (k == 0) parsed->master_volume = number;
+		else if (k == 1) parsed->music_volume = number;
+		else parsed->voice_volume = number;
+		seen[k] = 1;
+		return 1;
+	}
+	return 0;
+}
+
 DisplayOptionsResult display_options_load(const char *path, DisplayOptions *options)
 {
 	char data[256];
 	size_t length, pos;
 	int seen_custom = 0, seen_nvl = 0, seen_bottom = 0, seen_speed = 0, seen_auto = 0, seen_skip = 0, seen_touch = 0;
+	int seen_volume[3] = {0, 0, 0};
 	DisplayOptions parsed;
 	display_options_defaults(&parsed);
 	FILE *file;
@@ -131,6 +156,8 @@ DisplayOptionsResult display_options_load(const char *path, DisplayOptions *opti
 			|| strcmp(data + start, "touch_choices=1") == 0)) {
 			parsed.touch_choices = data[start + 14] == '1';
 			seen_touch = 1;
+		} else if (parse_volume(data + start, seen_volume, &parsed)) {
+			/* master_volume / music_volume / voice_volume = 0..10 */
 		} else {
 			return DISPLAY_OPTIONS_MALFORMED;
 		}
@@ -170,10 +197,12 @@ DisplayOptionsResult display_options_save(const char *path, const DisplayOptions
 		free(backup);
 		return DISPLAY_OPTIONS_IO_ERROR;
 	}
-	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\nbottom_text=%d\ntext_speed=%d\nauto_speed=%d\nskip_read=%d\ntouch_choices=%d\n",
+	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\nbottom_text=%d\ntext_speed=%d\nauto_speed=%d\nskip_read=%d\ntouch_choices=%d\n"
+		"master_volume=%d\nmusic_volume=%d\nvoice_volume=%d\n",
 		options->custom_textbox ? 1 : 0, options->nvl ? 1 : 0, options->bottom_text ? 1 : 0,
 		options->text_speed, options->auto_speed, options->skip_read ? 1 : 0,
-		options->touch_choices ? 1 : 0) < 0;
+		options->touch_choices ? 1 : 0, options->master_volume, options->music_volume,
+		options->voice_volume) < 0;
 	if (fclose(file) != 0)
 		failed = 1;
 	if (!failed) {

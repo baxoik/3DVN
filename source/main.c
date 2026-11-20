@@ -1030,6 +1030,12 @@ static int current_textbox_available(void)
 		: custom_textbox_available;
 }
 
+static void apply_volumes(void)
+{
+	audio_set_volumes(display_options.master_volume / 10.0f, display_options.music_volume / 10.0f,
+		display_options.voice_volume / 10.0f);
+}
+
 static void load_display_options(void)
 {
 	char path[200];
@@ -1037,6 +1043,7 @@ static void load_display_options(void)
 	options_path(path, sizeof(path));
 	DisplayOptionsResult result = display_options_load(path, &display_options);
 	display_options_apply_game_default(&display_options, result, config.default_nvl);
+	apply_volumes();
 	if (result != DISPLAY_OPTIONS_OK && result != DISPLAY_OPTIONS_MISSING) {
 		const char *problem = result == DISPLAY_OPTIONS_RECOVERED
 			? "Options recovered from backup; check settings files"
@@ -1051,11 +1058,23 @@ static void load_display_options(void)
 	}
 }
 
-static void toggle_display_option(int step)
+/* Options rows 6-8 are the volumes. A steps up and wraps; Left/Right stop at 0 and 10. */
+static int *volume_field(DisplayOptions *options, int row)
+{
+	return row == 6 ? &options->master_volume : row == 7 ? &options->music_volume
+		: row == 8 ? &options->voice_volume : NULL;
+}
+
+static void toggle_display_option_ex(int step, int wrap)
 {
 	DisplayOptions next = display_options;
 	char path[200];
-	if (panel_cursor == 0) {
+	int *volume = volume_field(&next, panel_cursor);
+	if (volume != NULL) {
+		int value = *volume + step;
+		*volume = wrap ? (value + 11) % 11 : value < 0 ? 0 : value > 10 ? 10 : value;
+		if (*volume == *volume_field(&display_options, panel_cursor)) return;
+	} else if (panel_cursor == 0) {
 		if (!current_textbox_available()) {
 			snprintf(notice, sizeof(notice), "This game has no custom textbox");
 			return;
@@ -1073,7 +1092,7 @@ static void toggle_display_option(int step)
 		next.text_speed = (next.text_speed + 4 + step) % 4;
 	} else if (panel_cursor == 4) {
 		next.auto_speed = (next.auto_speed + 3 + step) % 3;
-	} else {
+	} else if (panel_cursor == 5) {
 		next.skip_read = !next.skip_read;
 	}
 	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST)
@@ -1088,8 +1107,14 @@ static void toggle_display_option(int step)
 		return;
 	}
 	display_options = next;
+	apply_volumes();
 	snprintf(notice, sizeof(notice), "%s", result == DISPLAY_OPTIONS_SAVED_BACKUP_REMAINS
 		? "Options saved; remove old settings backup" : "Options saved");
+}
+
+static void toggle_display_option(int step)
+{
+	toggle_display_option_ex(step, 1);
 }
 
 static void make_preview(char *out, size_t size)
@@ -2482,7 +2507,18 @@ static void draw_game_menu(void)
 		Z_OVERLAY_TEXT, 0.0f);
 }
 
-#define OPTION_ROWS 6
+#define OPTION_ROWS 9
+#define OPTION_VISIBLE 6
+static int option_top;   /* first Options row shown; follows the cursor */
+
+static int option_first(void)
+{
+	if (panel_cursor < option_top) option_top = panel_cursor;
+	if (panel_cursor >= option_top + OPTION_VISIBLE) option_top = panel_cursor - OPTION_VISIBLE + 1;
+	if (option_top > OPTION_ROWS - OPTION_VISIBLE) option_top = OPTION_ROWS - OPTION_VISIBLE;
+	if (option_top < 0) option_top = 0;
+	return option_top;
+}
 
 /* Labels and current values of the Options rows. */
 static void option_texts(const char **labels, const char **values)
@@ -2490,7 +2526,12 @@ static void option_texts(const char **labels, const char **values)
 	static const char *speeds[] = {"Slow", "Normal", "Fast", "Instant"};
 	static const char *waits[] = {"Short", "Normal", "Long"};
 	static const char *names[OPTION_ROWS] = {"Textbox", "Display style", "Text screen", "Text speed",
-		"Auto speed", "Fast-forward"};
+		"Auto speed", "Fast-forward", "Master volume", "Music volume", "Voice volume"};
+	static char volumes[3][8];
+	for (int i = 0; i < 3; ++i) {
+		snprintf(volumes[i], sizeof(volumes[i]), "%d", *volume_field(&display_options, 6 + i));
+		values[6 + i] = volumes[i];
+	}
 	for (int i = 0; i < OPTION_ROWS; ++i) labels[i] = names[i];
 	values[0] = display_options_use_custom(&display_options, current_textbox_available()) ? "Custom" : "Default";
 	values[1] = display_options.nvl ? "NVL" : "ADV";
@@ -2506,15 +2547,29 @@ static void draw_options(void)
 	draw_line(config.labels[LABEL_OPTIONS], 40, 14, 0.7f, theme_accent(), Z_OVERLAY_TEXT, 320);
 	const char *labels[OPTION_ROWS], *values[OPTION_ROWS];
 	option_texts(labels, values);
-	for (int i = 0; i < OPTION_ROWS; ++i) {
-		float y = 46.0f + i * 27.0f;
+	int first = option_first();
+	for (int i = first; i < first + OPTION_VISIBLE; ++i) {
+		float y = 46.0f + (float)(i - first) * 27.0f;
 		int selected = i == panel_cursor;
 		draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, 40, y, 320, 24,
 			selected ? theme_accent() : theme_panel(215), Z_OVERLAY);
 		u32 color = selected && !ui_image(IMG_ITEM_SEL) ? theme_dark_text() : theme_text();
 		draw_line(labels[i], 52, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 155);
-		draw_line(values[i], 216, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 130);
+		const int *volume = volume_field(&display_options, i);
+		if (volume != NULL) {   /* slider: track, filled part, value */
+			rect(216, y + 10, 100, 4, C2D_Color32(255, 255, 255, 60), Z_OVERLAY_TEXT);
+			rect(216, y + 10, 10.0f * (float)*volume, 4, color, Z_OVERLAY_TEXT + 0.001f);
+			rect(214 + 10.0f * (float)*volume, y + 6, 4, 12, color, Z_OVERLAY_TEXT + 0.002f);
+			draw_line(values[i], 326, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 30);
+		} else {
+			draw_line(values[i], 216, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 130);
+		}
 	}
+	/* scrollbar: the list is longer than the box */
+	float track = OPTION_VISIBLE * 27.0f - 3.0f;
+	rect(364, 46, 3, track, C2D_Color32(255, 255, 255, 40), Z_OVERLAY);
+	rect(364, 46 + track * (float)first / OPTION_ROWS, 3, track * OPTION_VISIBLE / OPTION_ROWS,
+		theme_accent(), Z_OVERLAY + 0.001f);
 	draw_line("A / Left / Right change   B back", 40, 213, 0.4f,
 		C2D_Color32(150, 170, 165, 255), Z_OVERLAY_TEXT, 0.0f);
 }
@@ -2996,16 +3051,23 @@ static int title_touch_labels(const char **labels)
 	return title_count;
 }
 
+/* Bottom-screen buttons for the Options rows in view (same window as the top screen). */
 static int option_touch_labels(const char **labels)
 {
-	static char rows[OPTION_ROWS][64];
+	static char rows[OPTION_VISIBLE][64];
 	const char *names[OPTION_ROWS], *values[OPTION_ROWS];
 	option_texts(names, values);
-	for (int i = 0; i < OPTION_ROWS; ++i) {
-		snprintf(rows[i], sizeof(rows[i]), "%s:  %s", names[i], values[i]);
+	int first = option_first();
+	for (int i = 0; i < OPTION_VISIBLE; ++i) {
+		int row = first + i;
+		if (volume_field(&display_options, row) != NULL) {
+			snprintf(rows[i], sizeof(rows[i]), "%s:  -  %s  +", names[row], values[row]);
+		} else {
+			snprintf(rows[i], sizeof(rows[i]), "%s:  %s", names[row], values[row]);
+		}
 		labels[i] = rows[i];
 	}
-	return OPTION_ROWS;
+	return OPTION_VISIBLE;
 }
 
 static const char *const quit_touch_labels[] = {"Yes, quit to the game list"};
@@ -3052,7 +3114,8 @@ static void draw_bottom(C3D_RenderTarget *target)
 		const char *labels[OPTION_ROWS];
 		int count = option_touch_labels(labels);
 		/* The header doubles as the place for "Options saved" etc., so nothing overlaps the rows. */
-		draw_touch_list(notice[0] != '\0' ? notice : "Options  (tap to change)", labels, count, panel_cursor, "Back");
+		draw_touch_list(notice[0] != '\0' ? notice : "Options  (tap to change)", labels, count,
+			panel_cursor - option_first(), "Back");
 		return;
 	}
 	if (panel == PANEL_QUIT && mode == MODE_PLAY) {
@@ -3380,20 +3443,29 @@ static void handle_panel_input(u32 down, u32 repeat)
 		if (repeat & KEY_DUP) {
 			panel_cursor = (panel_cursor + OPTION_ROWS - 1) % OPTION_ROWS;
 		}
-		if (down & (KEY_A | KEY_DRIGHT)) {
+		int is_volume = volume_field(&display_options, panel_cursor) != NULL;
+		u32 sideways = is_volume ? repeat : down;   /* hold Left/Right to slide a volume */
+		if (down & KEY_A) {
 			toggle_display_option(1);
-		} else if (down & KEY_DLEFT) {
-			toggle_display_option(-1);
+		} else if (sideways & KEY_DRIGHT) {
+			toggle_display_option_ex(1, !is_volume);
+		} else if (sideways & KEY_DLEFT) {
+			toggle_display_option_ex(-1, !is_volume);
 		} else if (down & KEY_TOUCH) {
 			touchPosition touch;
 			hidTouchRead(&touch);
-			const char *labels[OPTION_ROWS];
-			Button buttons[OPTION_ROWS + 1];
+			const char *labels[OPTION_VISIBLE];
+			Button buttons[OPTION_VISIBLE + 1];
 			int count = option_touch_labels(labels);
 			int hit = hit_button(buttons, touch_list_buttons(buttons, labels, count, "Back"), &touch);
 			if (hit >= 0 && hit < count) {
-				panel_cursor = hit;
-				toggle_display_option(1);
+				panel_cursor = option_first() + hit;
+				if (volume_field(&display_options, panel_cursor) != NULL) {
+					/* left half turns down, right half turns up */
+					toggle_display_option_ex(touch.px < buttons[hit].x + buttons[hit].w / 2.0f ? -1 : 1, 0);
+				} else {
+					toggle_display_option(1);
+				}
 			} else if (hit == count) {
 				close_panel();
 			}

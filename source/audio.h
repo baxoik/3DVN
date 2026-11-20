@@ -14,6 +14,10 @@ void audio_stop_sfx(void);
 /* 1 while any sound effect (including voice clips) is still playing. */
 int audio_sfx_playing(void);
 
+/* Volumes 0..1. Sounds under audio/v/ are voices and use voice; other sound effects
+   follow master only. Applies to playing sounds at once. */
+void audio_set_volumes(float master, float music, float voice);
+
 void audio_update(float dt);
 
 #endif

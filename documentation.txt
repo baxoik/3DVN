@@ -514,7 +514,9 @@ General
 Every game opens at its title menu before main.3vs runs. Start begins the
 story from the beginning. Load opens that game's 15 save slots; only a valid
 save for the current script can be loaded. Options opens the game's display
-preferences. Extras appears only when extras.3vs exists in the game folder.
+preferences and its Master, Music and Voice volumes (0-10; Left/Right or tap
+the -/+ halves on the touch screen). Voice volume applies to sounds under
+audio/v/; other sound effects follow Master. Extras appears only when extras.3vs exists in the game folder.
 That file is a normal 3DVN script, so its menus can branch to gallery scenes,
 play audio, or launch videos. `stop` at the end returns to the title menu;
 pressing B, X, or SELECT during extras also returns there. Extras cannot be
