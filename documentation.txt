@@ -288,6 +288,9 @@ blocks. Words are separated by spaces; text containing spaces goes in
 
 6.5 Timing
     wait SECONDS         Pause; A skips the wait.
+  A wait that directly follows a line of dialogue (only sfx/music in between)
+  keeps that line in the text box; after a background, sprite, page or other
+  visual change the text box is hidden during the wait.
 
 6.6 Variables and expressions
     set NAME = EXPRESSION
