@@ -22,6 +22,7 @@
 #include "gs.h"
 #include "wrap.h"
 #include "nvl_page.h"
+#include "pack.h"
 
 /* The default 32 KB stack is too small for the script VM state. */
 u32 __stacksize__ = 256 * 1024;
@@ -35,6 +36,7 @@ u32 __stacksize__ = 256 * 1024;
 #define GAMES_DIR ROOT_DIR "/games"
 #define SAVES_DIR ROOT_DIR "/saves"
 #define SETTINGS_DIR ROOT_DIR "/settings"
+#define PACK_SUFFIX ".3vp"   /* a game packed into one archive: games/<name>.3vp */
 #define MAX_GAMES 32
 #define MAX_SPRITES 8
 #define MAX_TEXTURES 32
@@ -432,7 +434,7 @@ static unsigned morton(unsigned x, unsigned y)
 
 static unsigned char *read_file(const char *path, size_t *size)
 {
-	FILE *file = fopen(path, "rb");
+	FILE *file = vn_fopen(path, "rb");
 	if (file == NULL) {
 		return NULL;
 	}
@@ -774,13 +776,11 @@ static void play_audio_event(const GsEvent *e, int is_music)
 		audio_stop_sfx();
 		return;
 	}
-	static const char *extensions[] = {".wav", ""};
+	static const char *extensions[] = {".ogg", ".wav", ""};
 	char path[400];
-	for (int index = 0; index < 2; ++index) {
+	for (int index = 0; index < 3; ++index) {
 		snprintf(path, sizeof(path), "%s/audio/%s%s", game_dir, e->asset, extensions[index]);
-		FILE *probe = fopen(path, "rb");
-		if (probe != NULL) {
-			fclose(probe);
+		if (vn_exists(path)) {
 			break;
 		}
 	}
@@ -809,9 +809,21 @@ static void scan_games(void)
 		}
 		char path[320];
 		struct stat info;
+		size_t length = strlen(entry->d_name);
+		if (length > 4 && !strcmp(entry->d_name + length - 4, PACK_SUFFIX)) {
+			/* <name>.3vp game archive (skip it if a folder of the same name is also listed) */
+			char name[sizeof(game_names[0])];
+			snprintf(name, sizeof(name), "%.*s", (int)(length - 4), entry->d_name);
+			int listed = 0;
+			for (int i = 0; i < game_count; ++i) listed |= !strcmp(game_names[i], name);
+			if (!listed) snprintf(game_names[game_count++], sizeof(game_names[0]), "%s", name);
+			continue;
+		}
 		snprintf(path, sizeof(path), GAMES_DIR "/%s/" SCRIPT_FILE, entry->d_name);
 		if (stat(path, &info) == 0) {
-			snprintf(game_names[game_count++], sizeof(game_names[0]), "%s", entry->d_name);
+			int listed = 0;
+			for (int i = 0; i < game_count; ++i) listed |= !strcmp(game_names[i], entry->d_name);
+			if (!listed) snprintf(game_names[game_count++], sizeof(game_names[0]), "%s", entry->d_name);
 		}
 	}
 	closedir(dir);
@@ -1391,6 +1403,15 @@ static void start_game(const char *name)
 	notice[0] = '\0';
 	snprintf(game_name, sizeof(game_name), "%s", name);
 	snprintf(game_dir, sizeof(game_dir), GAMES_DIR "/%s", name);
+	{
+		/* games/<name>.3vp: the game's archive. A folder games/<name>/ next to it holds
+		   override files (patches, mods) that replace the archived ones. */
+		char packed[400];
+		struct stat info;
+		snprintf(packed, sizeof(packed), "%s" PACK_SUFFIX, game_dir);
+		pack_close();
+		pack_open(packed, game_dir, stat(game_dir, &info) == 0 && S_ISDIR(info.st_mode));
+	}
 
 	char path[320];
 	size_t size;
@@ -1540,7 +1561,7 @@ static void start_video(const GsEvent *e)
 	memset(&video, 0, sizeof(video));
 	snprintf(path, sizeof(path), "%s/video/%s.3vv", game_dir, e->asset);
 	video.skippable = e->seconds == 0.0f;
-	video.file = fopen(path, "rb");
+	video.file = vn_fopen(path, "rb");
 
 	if (video.file == NULL) {
 		snprintf(problem, sizeof(problem), "file not found");
@@ -1605,49 +1626,38 @@ static int gallery_name_compare(const void *left, const void *right)
 	return strcmp((const char *)left, (const char *)right);
 }
 
+static void gallery_found(const char *name, void *ctx)
+{
+	(void)ctx;
+	const char *extension = strrchr(name, '.');
+	if (gallery_count >= MAX_GALLERY_ITEMS || extension == NULL
+		|| (strcmp(extension, ".png") && strcmp(extension, ".jpg"))) {
+		return;
+	}
+	size_t length = (size_t)(extension - name);
+	if (length == 0 || length >= GS_STR_LEN) {
+		return;
+	}
+	for (int i = 0; i < gallery_count; ++i) {
+		if (strlen(gallery_items[i]) == length && strncmp(gallery_items[i], name, length) == 0) {
+			return;
+		}
+	}
+	memcpy(gallery_items[gallery_count], name, length);
+	gallery_items[gallery_count][length] = '\0';
+	++gallery_count;
+}
+
 static int start_gallery(void)
 {
 	char directory[320];
 	snprintf(directory, sizeof(directory), "%s/gallery/thumbs", game_dir);
-	DIR *handle = opendir(directory);
-	if (handle == NULL) {
+	gallery_count = 0;
+	if (vn_list(directory, gallery_found, NULL) < 0) {
 		snprintf(message, sizeof(message), "Gallery: cannot open gallery/thumbs");
 		mode = MODE_ERROR;
 		return 0;
 	}
-
-	gallery_count = 0;
-	struct dirent *entry;
-	while ((entry = readdir(handle)) != NULL && gallery_count < MAX_GALLERY_ITEMS) {
-		const char *extension = strrchr(entry->d_name, '.');
-		if (extension == NULL || (strcmp(extension, ".png") && strcmp(extension, ".jpg"))) {
-			continue;
-		}
-		size_t length = (size_t)(extension - entry->d_name);
-		if (length == 0 || length >= GS_STR_LEN) {
-			continue;
-		}
-		char path[576];
-		snprintf(path, sizeof(path), "%s/%s", directory, entry->d_name);
-		struct stat info;
-		if (stat(path, &info) != 0 || !S_ISREG(info.st_mode)) {
-			continue;
-		}
-		int duplicate = 0;
-		for (int i = 0; i < gallery_count; ++i) {
-			if (strlen(gallery_items[i]) == length
-				&& strncmp(gallery_items[i], entry->d_name, length) == 0) {
-				duplicate = 1;
-				break;
-			}
-		}
-		if (!duplicate) {
-			memcpy(gallery_items[gallery_count], entry->d_name, length);
-			gallery_items[gallery_count][length] = '\0';
-			++gallery_count;
-		}
-	}
-	closedir(handle);
 	if (gallery_count == 0) {
 		snprintf(message, sizeof(message), "Gallery: no thumbnails in gallery/thumbs");
 		mode = MODE_ERROR;

@@ -78,6 +78,15 @@ out of git (see `.gitignore`).
    `voice_overrides.tsv` (or point `VOICE_OVERRIDES` at it). Keep that file
    local: it quotes dialogue.
 
+## Pack it (optional, recommended)
+
+```sh
+python3 tools/make_pack.py voiced/g-senjou-no-maou g-senjou-no-maou.3vp --ogg
+```
+
+One 352 MB file (Ogg audio) instead of 2.2 GB in about 16,000 files. Put it in
+`<3dvn root>/games/` instead of the folder. It works on 3DS, Wii U and PC.
+
 ## Get it onto the 3DS
 
 Copy `3dvn.3dsx` to `sd:/3ds/` and the game folder to

@@ -64,3 +64,22 @@ plays a button script: `wait N`, `press KEY[+KEY] [N]`, `hold KEY N`,
 SDL_VIDEODRIVER=offscreen SDL_AUDIODRIVER=dummy VN_SOFTWARE_RENDERER=1 \
   VN_SCRIPT=test.txt VN_SHOTS=shots ./3dvn-pc
 ```
+
+## Game archives (.3vp) and Ogg audio (all platforms)
+
+A game can be one file instead of a folder: `games/<name>.3vp`, an uncompressed
+("stored") ZIP of the game folder. The engine reads files straight out of it, so a
+whole game is one copy to the SD card (much faster than thousands of small files on
+FAT32) and the game list shows it like a folder. A folder `games/<name>/` next to the
+archive holds override files (patches, mods): any file there replaces the archived one.
+
+Audio can be Ogg Vorbis (`.ogg`, tried before `.wav`), decoded while streaming with
+stb_vorbis, for music and for voices / sound effects (no 2 MB limit for .ogg clips).
+
+```sh
+python3 tools/make_pack.py games/<name> <name>.3vp --ogg   # needs ffmpeg for --ogg
+```
+
+`--ogg` converts all WAV audio (voices `--voice-quality`, default 2; other audio
+`--music-quality`, default 4) with a conversion cache, then packs. Example: the
+voiced G-Senjou build goes from 2.2 GB in 16,000 files to one 352 MB archive.

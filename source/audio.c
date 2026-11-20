@@ -5,7 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "pack.h"
 #include "wav.h"
+
+/* Ogg Vorbis: music and voices can be .ogg (much smaller than .wav); decoded while
+   streaming with stb_vorbis (public domain, pull API on a FILE*). */
+#define STB_VORBIS_NO_PUSHDATA_API
+#define STB_VORBIS_MAX_CHANNELS 2
+#include "stb_vorbis.h"
 
 #define MUSIC_CHANNEL 0
 #define SFX_FIRST 1
@@ -13,10 +20,13 @@
 #define STREAM_BUFFERS 4
 #define STREAM_BYTES (32 * 1024)
 #define MAX_SFX_BYTES (2 * 1024 * 1024)
+#define SFX_STREAM_BUFFERS 2
+#define SFX_STREAM_BYTES (16 * 1024)
 
 typedef struct {
 	int active;
 	FILE *file;
+	stb_vorbis *vorbis;   /* set for .ogg music (then file is owned by the decoder) */
 	WavInfo info;
 	void *memory;
 	ndspWaveBuf buffers[STREAM_BUFFERS];
@@ -27,7 +37,10 @@ typedef struct {
 
 typedef struct {
 	void *memory;
-	ndspWaveBuf buffer;
+	ndspWaveBuf buffer;            /* WAV: the whole sound in one buffer */
+	stb_vorbis *vorbis;            /* Ogg: streamed through two small buffers */
+	ndspWaveBuf buffers[SFX_STREAM_BUFFERS];
+	int channels, finished;
 } Sfx;
 
 static int ready;
@@ -70,7 +83,9 @@ static void close_music(void)
 		return;
 	}
 	ndspChnReset(MUSIC_CHANNEL);
-	if (music.file != NULL) {
+	if (music.vorbis != NULL) {
+		stb_vorbis_close(music.vorbis);
+	} else if (music.file != NULL) {
 		fclose(music.file);
 	}
 	linearFree(music.memory);
@@ -79,6 +94,9 @@ static void close_music(void)
 
 static void sfx_release(Sfx *slot)
 {
+	if (slot->vorbis != NULL) {
+		stb_vorbis_close(slot->vorbis);
+	}
 	if (slot->memory != NULL) {
 		linearFree(slot->memory);
 	}
@@ -104,8 +122,18 @@ int audio_sfx_playing(void)
 	}
 	for (int index = 0; index < SFX_SLOTS; ++index) {
 		/* The buffer is QUEUED as soon as it is added, before the DSP reports the channel as playing. */
-		u8 status = sfx[index].buffer.status;
-		if (sfx[index].memory != NULL && (status == NDSP_WBUF_QUEUED || status == NDSP_WBUF_PLAYING)) {
+		const Sfx *slot = &sfx[index];
+		if (slot->memory == NULL) continue;
+		if (slot->vorbis != NULL) {
+			if (!slot->finished) return 1;
+			for (int b = 0; b < SFX_STREAM_BUFFERS; ++b) {
+				u8 status = slot->buffers[b].status;
+				if (status == NDSP_WBUF_QUEUED || status == NDSP_WBUF_PLAYING) return 1;
+			}
+			continue;
+		}
+		u8 status = slot->buffer.status;
+		if (status == NDSP_WBUF_QUEUED || status == NDSP_WBUF_PLAYING) {
 			return 1;
 		}
 	}
@@ -141,7 +169,20 @@ static void feed_music(void)
 		u8 *target = (u8 *)music.memory + (size_t)index * STREAM_BYTES;
 		size_t filled = 0;
 		size_t want = STREAM_BYTES - STREAM_BYTES % (size_t)music.info.frame_size;
-		while (filled < want) {
+		while (music.vorbis != NULL && filled < want) {
+			int channels = music.info.channels;
+			int frames = stb_vorbis_get_samples_short_interleaved(music.vorbis, channels,
+				(short *)(target + filled), (int)((want - filled) / 2));
+			if (frames <= 0) {
+				if (filled == 0 && music.position == -1) break;   /* empty file: give up */
+				stb_vorbis_seek_start(music.vorbis);              /* loop */
+				music.position = -1;
+				continue;
+			}
+			music.position = 0;
+			filled += (size_t)frames * (size_t)music.info.frame_size;
+		}
+		while (music.vorbis == NULL && filled < want) {
 			long left = music.info.data_size - music.position;
 			if (left <= 0) {
 				music.position = 0;
@@ -173,27 +214,59 @@ static void feed_music(void)
 	}
 }
 
+/* If `file` is Ogg Vorbis, opens a decoder (which then owns the file) and fills `info` as
+   16-bit PCM. Returns 1 for Ogg, 0 for not Ogg (file rewound), -1 on a broken Ogg file. */
+static int open_ogg(FILE *file, stb_vorbis **out, WavInfo *info, char *err, int err_size)
+{
+	char magic[4];
+	*out = NULL;
+	if (fread(magic, 1, 4, file) != 4 || memcmp(magic, "OggS", 4) != 0) {
+		fseek(file, 0, SEEK_SET);
+		return 0;
+	}
+	fseek(file, 0, SEEK_SET);
+	int error = 0;
+	stb_vorbis *vorbis = stb_vorbis_open_file(file, 1, &error, NULL);
+	if (vorbis == NULL) {
+		fclose(file);
+		say(err, err_size, "bad Ogg Vorbis file");
+		return -1;
+	}
+	stb_vorbis_info v = stb_vorbis_get_info(vorbis);
+	memset(info, 0, sizeof(*info));
+	info->channels = v.channels > 2 ? 2 : v.channels;
+	info->bits = 16;
+	info->rate = (int)v.sample_rate;
+	info->frame_size = 2 * info->channels;
+	*out = vorbis;
+	return 1;
+}
+
 int audio_play_music(const char *path, float fade_seconds, char *err, int err_size)
 {
 	if (!ready) {
 		say(err, err_size, "no audio (dspfirm.cdc missing?)");
 		return 0;
 	}
-	FILE *file = fopen(path, "rb");
+	FILE *file = vn_fopen(path, "rb");
 	if (file == NULL) {
 		say(err, err_size, "audio file not found");
 		return 0;
 	}
 	WavInfo info;
+	stb_vorbis *vorbis = NULL;
+	if (open_ogg(file, &vorbis, &info, err, err_size) < 0) {
+		return 0;
+	}
 	char reason[64];
-	if (!wav_open_info(file, &info, reason, sizeof(reason))) {
+	if (vorbis == NULL && !wav_open_info(file, &info, reason, sizeof(reason))) {
 		fclose(file);
 		say(err, err_size, reason);
 		return 0;
 	}
 	void *memory = linearAlloc((size_t)STREAM_BUFFERS * STREAM_BYTES);
 	if (memory == NULL) {
-		fclose(file);
+		if (vorbis != NULL) stb_vorbis_close(vorbis); else fclose(file);
 		say(err, err_size, "out of audio memory");
 		return 0;
 	}
@@ -201,6 +274,7 @@ int audio_play_music(const char *path, float fade_seconds, char *err, int err_si
 	close_music();
 	music.active = 1;
 	music.file = file;
+	music.vorbis = vorbis;
 	music.info = info;
 	music.memory = memory;
 	music.target = 1.0f;
@@ -230,18 +304,68 @@ void audio_stop_music(float fade_seconds)
 	music.rate = music.volume > 0.0f ? music.volume / fade_seconds : 1.0f;
 }
 
+/* Refills an Ogg sound effect's finished buffers; marks it finished at the end of the file. */
+static void feed_sfx(Sfx *slot, int channel)
+{
+	for (int index = 0; index < SFX_STREAM_BUFFERS && !slot->finished; ++index) {
+		ndspWaveBuf *buffer = &slot->buffers[index];
+		if (buffer->status != NDSP_WBUF_DONE && buffer->status != NDSP_WBUF_FREE) {
+			continue;
+		}
+		short *target = (short *)((u8 *)slot->memory + (size_t)index * SFX_STREAM_BYTES);
+		int frames = stb_vorbis_get_samples_short_interleaved(slot->vorbis, slot->channels, target,
+			SFX_STREAM_BYTES / 2);
+		if (frames <= 0) {
+			slot->finished = 1;
+			break;
+		}
+		memset(buffer, 0, sizeof(*buffer));
+		buffer->data_vaddr = target;
+		buffer->nsamples = (u32)frames;
+		DSP_FlushDataCache(target, (u32)frames * 2u * (u32)slot->channels);
+		ndspChnWaveBufAdd(channel, buffer);
+	}
+}
+
 int audio_play_sfx(const char *path, char *err, int err_size)
 {
 	if (!ready) {
 		say(err, err_size, "no audio (dspfirm.cdc missing?)");
 		return 0;
 	}
-	FILE *file = fopen(path, "rb");
+	FILE *file = vn_fopen(path, "rb");
 	if (file == NULL) {
 		say(err, err_size, "audio file not found");
 		return 0;
 	}
 	WavInfo info;
+	stb_vorbis *vorbis = NULL;
+	int ogg = open_ogg(file, &vorbis, &info, err, err_size);
+	if (ogg < 0) {
+		return 0;
+	}
+	if (ogg) {
+		void *buffers = linearAlloc((size_t)SFX_STREAM_BUFFERS * SFX_STREAM_BYTES);
+		if (buffers == NULL) {
+			stb_vorbis_close(vorbis);
+			say(err, err_size, "out of audio memory");
+			return 0;
+		}
+		int channel = SFX_FIRST + next_sfx;
+		Sfx *slot = &sfx[next_sfx];
+		next_sfx = (next_sfx + 1) % SFX_SLOTS;
+		ndspChnReset(channel);
+		sfx_release(slot);
+		slot->memory = buffers;
+		slot->vorbis = vorbis;
+		slot->channels = info.channels;
+		ndspChnSetInterp(channel, NDSP_INTERP_LINEAR);
+		ndspChnSetRate(channel, (float)info.rate);
+		ndspChnSetFormat(channel, ndsp_format(&info));
+		set_volume(channel, 1.0f);
+		feed_sfx(slot, channel);
+		return 1;
+	}
 	char reason[64];
 	if (!wav_open_info(file, &info, reason, sizeof(reason))) {
 		fclose(file);
@@ -292,7 +416,15 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 
 void audio_update(float dt)
 {
-	if (!ready || !music.active) {
+	if (!ready) {
+		return;
+	}
+	for (int index = 0; index < SFX_SLOTS; ++index) {
+		if (sfx[index].vorbis != NULL && !sfx[index].finished) {
+			feed_sfx(&sfx[index], SFX_FIRST + index);
+		}
+	}
+	if (!music.active) {
 		return;
 	}
 	if (music.volume != music.target) {
