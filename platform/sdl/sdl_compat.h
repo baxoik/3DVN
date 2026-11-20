@@ -32,7 +32,7 @@ bool aptMainLoop(void);
 #ifdef __WIIU__
 /* Where the app can exit to on Wii U. vn_wiiu_exit_to_hbl returns 1 when the Homebrew
    Launcher is being launched (keep running until the system closes the app), 2 when a
-   plain exit returns there (legacy HBL in Mii Maker), 0 when it is not available. */
+   plain exit returns there (classic HBL: Haxchi, CBHC, Mii Maker), 0 when it is not available. */
 int vn_wiiu_can_exit_to_hbl(void);
 int vn_wiiu_exit_to_hbl(void);
 void vn_wiiu_exit_to_menu(void);
