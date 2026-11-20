@@ -526,6 +526,9 @@ static unsigned morton(unsigned x, unsigned y)
 
 static unsigned char *read_file(const char *path, size_t *size)
 {
+	int handled;
+	unsigned char *whole = vn_read_whole(path, size, &handled);
+	if (handled) return whole;
 	FILE *file = vn_fopen(path, "rb");
 	if (file == NULL) {
 		return NULL;

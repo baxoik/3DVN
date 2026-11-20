@@ -45,6 +45,7 @@ typedef struct {
 	ndspWaveBuf buffers[SFX_STREAM_BUFFERS];
 	int channels, finished;
 	int voice;                     /* from audio/v/: follows the voice volume */
+	unsigned char *ogg_data;       /* Ogg file decoded from memory */
 } Sfx;
 
 static int ready;
@@ -147,6 +148,7 @@ static void sfx_release(Sfx *slot)
 	if (slot->vorbis != NULL) {
 		stb_vorbis_close(slot->vorbis);
 	}
+	free(slot->ogg_data);
 	if (slot->memory != NULL) {
 		linearFree(slot->memory);
 	}
@@ -293,6 +295,16 @@ static void feed_music(void)
 
 /* If `file` is Ogg Vorbis, opens a decoder (which then owns the file) and fills `info` as
    16-bit PCM. Returns 1 for Ogg, 0 for not Ogg (file rewound), -1 on a broken Ogg file. */
+static void ogg_info(stb_vorbis *vorbis, WavInfo *info)
+{
+	stb_vorbis_info v = stb_vorbis_get_info(vorbis);
+	memset(info, 0, sizeof(*info));
+	info->channels = v.channels > 2 ? 2 : v.channels;
+	info->bits = 16;
+	info->rate = (int)v.sample_rate;
+	info->frame_size = 2 * info->channels;
+}
+
 static int open_ogg(FILE *file, stb_vorbis **out, WavInfo *info, char *err, int err_size)
 {
 	char magic[4];
@@ -309,12 +321,7 @@ static int open_ogg(FILE *file, stb_vorbis **out, WavInfo *info, char *err, int 
 		say(err, err_size, "bad Ogg Vorbis file");
 		return -1;
 	}
-	stb_vorbis_info v = stb_vorbis_get_info(vorbis);
-	memset(info, 0, sizeof(*info));
-	info->channels = v.channels > 2 ? 2 : v.channels;
-	info->bits = 16;
-	info->rate = (int)v.sample_rate;
-	info->frame_size = 2 * info->channels;
+	ogg_info(vorbis, info);
 	*out = vorbis;
 	return 1;
 }
@@ -422,21 +429,47 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 		say(err, err_size, "no audio (dspfirm.cdc missing?)");
 		return 0;
 	}
-	FILE *file = vn_fopen(path, "rb");
-	if (file == NULL) {
+	/* Read the whole file at once (one read from the archive; streaming it took many small
+	   SD reads on Wii U): Ogg is decoded from memory, WAV is parsed through fmemopen. */
+	size_t whole_size = 0;
+	int handled = 0;
+	unsigned char *whole = vn_read_whole(path, &whole_size, &handled);
+	if (handled && whole == NULL) {
 		say(err, err_size, "audio file not found");
 		return 0;
 	}
 	WavInfo info;
 	stb_vorbis *vorbis = NULL;
-	int ogg = open_ogg(file, &vorbis, &info, err, err_size);
-	if (ogg < 0) {
-		return 0;
+	int ogg;
+	FILE *file = NULL;
+	if (whole != NULL && whole_size >= 4 && memcmp(whole, "OggS", 4) == 0) {
+		int error = 0;
+		vorbis = stb_vorbis_open_memory(whole, (int)whole_size, &error, NULL);
+		if (vorbis == NULL) {
+			free(whole);
+			say(err, err_size, "bad Ogg Vorbis file");
+			return 0;
+		}
+		ogg_info(vorbis, &info);
+		ogg = 1;
+	} else {
+		file = whole != NULL ? fmemopen(whole, whole_size, "rb") : vn_fopen(path, "rb");
+		if (file == NULL) {
+			free(whole);
+			say(err, err_size, "audio file not found");
+			return 0;
+		}
+		ogg = open_ogg(file, &vorbis, &info, err, err_size);
+		if (ogg < 0) {
+			free(whole);
+			return 0;
+		}
 	}
 	if (ogg) {
 		void *buffers = linearAlloc((size_t)SFX_STREAM_BUFFERS * SFX_STREAM_BYTES);
 		if (buffers == NULL) {
 			stb_vorbis_close(vorbis);
+			free(whole);
 			say(err, err_size, "out of audio memory");
 			return 0;
 		}
@@ -447,6 +480,7 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 		sfx_release(slot);
 		slot->memory = buffers;
 		slot->vorbis = vorbis;
+		slot->ogg_data = whole;   /* decoded from memory: keep it until the sound is released */
 		slot->channels = info.channels;
 		slot->voice = is_voice_path(path);
 		ndspChnSetInterp(channel, NDSP_INTERP_LINEAR);
@@ -459,12 +493,14 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 	char reason[64];
 	if (!wav_open_info(file, &info, reason, sizeof(reason))) {
 		fclose(file);
+		free(whole);
 		say(err, err_size, reason);
 		return 0;
 	}
 	long bytes = info.frames * info.frame_size;   /* decoded size */
 	if (bytes > MAX_SFX_BYTES) {
 		fclose(file);
+		free(whole);
 		say(err, err_size, "sound effect too long (4 MB max)");
 		return 0;
 	}
@@ -473,12 +509,14 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 	if (memory == NULL || packed == NULL) {
 		if (memory != NULL) linearFree(memory);
 		fclose(file);
+		free(whole);
 		say(err, err_size, "out of audio memory");
 		return 0;
 	}
 	fseek(file, info.data_offset, SEEK_SET);
 	size_t got = fread(packed, 1, (size_t)info.data_size, file);
 	fclose(file);
+	free(whole);
 	if (got != (size_t)info.data_size) {
 		if (packed != memory) free(packed);
 		linearFree(memory);

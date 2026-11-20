@@ -21,6 +21,11 @@ int pack_active(void);
 FILE *vn_fopen(const char *path, const char *mode);
 /* 1 if the game file exists (in the archive or on disk). */
 int vn_exists(const char *path);
+/* Reads a whole file from the open archive with a single read (stdio would split it into
+   small buffered reads, each seeking the archive). Sets *handled to 0 when the path is not
+   the archive's to answer (no archive, or a loose override file): use vn_fopen then.
+   Returns a malloc'd, NUL-terminated buffer, or NULL. */
+unsigned char *vn_read_whole(const char *path, size_t *size, int *handled);
 /* Calls `found` for each file directly inside `dir` (archive or disk); returns the count. */
 int vn_list(const char *dir, void (*found)(const char *name, void *ctx), void *ctx);
 

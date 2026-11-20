@@ -4,6 +4,7 @@
 #include "pack.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,8 @@ static char *names;      /* storage for all entry names */
 static char root[320];
 static size_t root_len;
 static int use_overrides;
+
+#define STREAM_BUFFER (64 * 1024)   /* stdio buffer for the archive and each file in it */
 
 static uint16_t le16(const unsigned char *p) { return (uint16_t)(p[0] | p[1] << 8); }
 static uint32_t le32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -58,6 +61,7 @@ int pack_open(const char *path, const char *game_root, int overrides)
 	pack_close();
 	FILE *file = fopen(path, "rb");
 	if (file == NULL) return 0;
+	setvbuf(file, NULL, _IOFBF, STREAM_BUFFER);   /* fewer, larger reads from the SD card */
 	/* End of central directory: last record with signature 0x06054b50 (comment <= 64 KiB). */
 	if (fseek(file, 0, SEEK_END) != 0) goto fail;
 	long length = ftell(file);
@@ -186,14 +190,49 @@ FILE *vn_fopen(const char *path, const char *mode)
 			s->pos = 0;
 			cookie_io_functions_t io = {stream_read, NULL, stream_seek, stream_close};
 			FILE *f = fopencookie(s, "rb", io);
-			if (f == NULL) free(s);
+			if (f == NULL) {
+				free(s);
+				return NULL;
+			}
+			/* stdio's default buffer is small (1 KB on newlib): every refill seeks the shared
+			   archive, so a 300 KB image took hundreds of SD reads on Wii U. */
+			setvbuf(f, NULL, _IOFBF, STREAM_BUFFER);
 			return f;
 		}
-		if (archive != NULL && strncmp(path, root, root_len) == 0) {
-			/* Inside an archived game but not in the archive: fall back to a loose file. */
+		if (archive != NULL && !use_overrides && strncmp(path, root, root_len) == 0) {
+			/* Inside an archived game and not in the archive: it does not exist. Skip the
+			   real file system, where a failed open is slow on consoles (the engine probes
+			   names, e.g. .png before .jpg). */
+			errno = ENOENT;
+			return NULL;
 		}
 	}
 	return fopen(path, mode);
+}
+
+unsigned char *vn_read_whole(const char *path, size_t *size, int *handled)
+{
+	*handled = 0;
+	if (archive == NULL) return NULL;
+	if (use_overrides) {
+		struct stat info;
+		if (stat(path, &info) == 0) return NULL;   /* a loose override file: caller reads it */
+	}
+	Entry *e = find(path);
+	if (e == NULL) {
+		*handled = strncmp(path, root, root_len) == 0;   /* in the archived game: missing */
+		return NULL;
+	}
+	*handled = 1;
+	unsigned char *data = malloc((size_t)e->size + 1);
+	if (data == NULL) return NULL;
+	if (fseek(archive, (long)e->data, SEEK_SET) != 0 || fread(data, 1, e->size, archive) != e->size) {
+		free(data);
+		return NULL;
+	}
+	data[e->size] = '\0';
+	*size = e->size;
+	return data;
 }
 
 int vn_exists(const char *path)
