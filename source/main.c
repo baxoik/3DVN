@@ -171,6 +171,28 @@ static Mode mode = MODE_SELECT;
 static Wait waiting = PLAY_NONE;
 static char message[GS_TEXT_LEN];
 static char notice[96];
+
+#ifdef AUTOTEST
+/* Emulator test build only: log warnings, errors, chapter loads and text fitting. */
+#include <stdarg.h>
+static void test_log(const char *format, ...)
+{
+	static FILE *file;
+	if (file == NULL) {
+		file = fopen("sdmc:/3dvn-test.log", "a");
+		if (file == NULL) return;
+	}
+	va_list args;
+	va_start(args, format);
+	vfprintf(file, format, args);
+	va_end(args);
+	fputc('\n', file);
+	fflush(file);
+}
+#define TEST_LOG(...) test_log(__VA_ARGS__)
+#else
+#define TEST_LOG(...) ((void)0)
+#endif
 static float timer_left;
 static float chars_shown;
 static u32 advance_started;
@@ -1148,6 +1170,7 @@ static char *load_include(const char *name, void *context)
 /* Compiles a chapter script for the `script` command and makes it the running program. */
 static int switch_script(const char *name)
 {
+	TEST_LOG("SCRIPT %s", name);
 	if (strstr(name, "..") != NULL || name[0] == '/' || strchr(name, ':') != NULL) {
 		snprintf(notice, sizeof(notice), "Bad script name");
 		return 0;
@@ -1710,6 +1733,7 @@ static float fit_text_scale(const char *text, float width, float height, float s
 	}
 	float previous_scale = measure_scale;
 	float fitted = scale;
+	int fits = 0;
 	for (int step = 0; step < 10; ++step) {
 		measure_scale = fitted;
 		int count = wrap_text_lines(text, width, measure_text, NULL, starts, ends, GS_TEXT_LEN);
@@ -1718,12 +1742,16 @@ static float fit_text_scale(const char *text, float width, float height, float s
 		C2D_TextBufClear(measure_buf);
 		C2D_TextFontParse(&metric, font, measure_buf, "Ag");
 		C2D_TextGetDimensions(&metric, fitted, fitted, NULL, &line_height);
-		if (count * line_height <= height || fitted <= scale * 0.6f) {
+		fits = count * line_height <= height;
+		if (fits || fitted <= scale * 0.6f) {
 			break;
 		}
 		fitted = fmaxf(scale * 0.6f, fitted * 0.94f);
 	}
 	measure_scale = previous_scale;
+	if (fitted < scale || !fits) {
+		TEST_LOG("%s %.0f%% %.70s", fits ? "FIT" : "OVERFLOW", fitted / scale * 100.0f, text);
+	}
 	snprintf(cached_text, sizeof(cached_text), "%s", text);
 	cached_width = width;
 	cached_height = height;
@@ -2353,7 +2381,8 @@ static void draw_top(C3D_RenderTarget *target)
 	} else if (display_options.nvl && config.num[NUM_NVL_ACCUMULATE] && nvl_page.length
 		&& (waiting == PLAY_TIMER || waiting == PLAY_WAITBG)) {
 		draw_textbox();
-	} else if (waiting == PLAY_END) {
+	} else if (waiting == PLAY_END && (scene.bg[0] == '\0' || !strcmp(scene.bg, "black"))) {
+		/* Only over an empty screen: games that show their own end card keep it clean. */
 		draw_line("THE END", 150, 100, 0.8f, C2D_Color32(255, 255, 255, 255), Z_TEXT, 0.0f);
 	}
 	if (fast_forward && panel == PANEL_NONE && waiting != PLAY_MENU && waiting != PLAY_END) {
@@ -2991,6 +3020,19 @@ int main(void)
 		}
 
 		audio_update(dt);
+#ifdef AUTOTEST
+		{
+			static char logged_notice[sizeof(notice)], logged_message[sizeof(message)];
+			if (strcmp(notice, logged_notice)) {
+				if (notice[0]) TEST_LOG("NOTICE %s", notice);
+				snprintf(logged_notice, sizeof(logged_notice), "%s", notice);
+			}
+			if (mode == MODE_ERROR && strcmp(message, logged_message)) {
+				TEST_LOG("ERROR %s", message);
+				snprintf(logged_message, sizeof(logged_message), "%s", message);
+			}
+		}
+#endif
 
 		if (mode == MODE_SELECT) {
 			if (game_count > 0) {
