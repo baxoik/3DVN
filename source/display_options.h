@@ -6,6 +6,7 @@
 typedef struct {
 	bool custom_textbox;
 	bool nvl;
+	bool bottom_text;  /* ADV text on the bottom screen instead of over the scene */
 } DisplayOptions;
 
 typedef enum {
@@ -18,7 +19,7 @@ typedef enum {
 	DISPLAY_OPTIONS_INVALID_ARGUMENT
 } DisplayOptionsResult;
 
-/* options must not be NULL. Defaults are custom_textbox=true, nvl=false. */
+/* options must not be NULL. Defaults are custom_textbox=true, nvl=false, bottom_text=false. */
 void display_options_defaults(DisplayOptions *options);
 
 /* A saved custom preference is effective only while a custom image is available. */
@@ -29,7 +30,7 @@ void display_options_apply_game_default(DisplayOptions *options, DisplayOptionsR
 
 /*
  * The file has exactly one custom_textbox=0|1 line and one nvl=0|1 line,
- * in either order. LF and CRLF are accepted; the final newline is optional.
+ * and at most one bottom_text=0|1 line (missing means 0), in any order. LF and CRLF are accepted; the final newline is optional.
  * A missing file returns MISSING and sets defaults, unless a backup exists,
  * in which case it is loaded and RECOVERED is returned. Other errors leave
  * options unchanged. An empty path or NULL argument returns INVALID_ARGUMENT.

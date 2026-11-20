@@ -7,6 +7,7 @@
 > - **Long lines fit the text box:** a line that would wrap past the bottom of the box is drawn smaller (down to 60%) instead of running off the screen. Also sent upstream as [#1](https://github.com/baxoik/3DVN/pull/1).
 > - **Close-up sprites in front:** sprites named `*_b` are drawn after the others, as in the original game.
 > - **No "THE END" over a game's own end card:** it's only drawn over an empty or black screen.
+> - **Text on the bottom screen** (branch `bottom-text`): Options → "Text screen: Bottom" puts the dialogue, speaker name and face on the bottom screen, so the top screen shows only the scene. The buttons move to a slim strip along the bottom edge. It's saved per game, and the default stays "Top".
 > - **Emulator test build:** `make EXTRA_CFLAGS=-DAUTOTEST` logs notices, errors, chapter loads and shrunk or overflowing lines to `sdmc:/3dvn-test.log`.
 >
 > **[gsenjou-tools/](gsenjou-tools/README.md)** (for G-Senjou no Maou)

@@ -213,6 +213,12 @@ static SlotInfo slots[SAVE_SLOTS];
 static C2D_TextBuf measure_buf;
 static GameConfig config;
 static DisplayOptions display_options;
+
+/* Text-on-bottom-screen layout: the option applies to ADV text only (NVL stays on top). */
+static int bottom_text_active(void)
+{
+	return display_options.bottom_text && !display_options.nvl;
+}
 static int custom_textbox_available, custom_nvl_available;
 static Glossary glossary;
 static int gloss_indices[CFG_MAX_TERMS], gloss_visible_count;
@@ -766,8 +772,10 @@ static void toggle_display_option(void)
 			return;
 		}
 		next.custom_textbox = !next.custom_textbox;
-	} else {
+	} else if (panel_cursor == 1) {
 		next.nvl = !next.nvl;
+	} else {
+		next.bottom_text = !next.bottom_text;
 	}
 	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST)
 		|| (mkdir(SETTINGS_DIR, 0777) != 0 && errno != EEXIST)) {
@@ -1957,7 +1965,7 @@ static void draw_scene(void)
 			/* Speaker portrait: fixed above the text box's left corner, unaffected by camera effects. */
 			int face_in_box = config.num[NUM_FACE_BOX]
 				&& display_options_use_custom(&display_options, current_textbox_available());
-			if (!display_options.nvl && !face_in_box) {
+			if (!display_options.nvl && !face_in_box && !bottom_text_active()) {
 				C2D_ImageTint tint;
 				C2D_AlphaImageTint(&tint, sprite->alpha);
 				C2D_DrawImageAt(picture->image, (float)config.num[NUM_TEXTBOX_X],
@@ -2173,10 +2181,10 @@ static void draw_options(void)
 {
 	draw_backdrop(IMG_MENU_BG, 225);
 	draw_line(config.labels[LABEL_OPTIONS], 40, 14, 0.7f, theme_accent(), Z_OVERLAY_TEXT, 320);
-	const char *labels[] = {"Textbox", "Display style"};
+	const char *labels[] = {"Textbox", "Display style", "Text screen"};
 	const char *values[] = {display_options_use_custom(&display_options, current_textbox_available()) ? "Custom" : "Default",
-		display_options.nvl ? "NVL" : "ADV"};
-	for (int i = 0; i < 2; ++i) {
+		display_options.nvl ? "NVL" : "ADV", display_options.bottom_text ? "Bottom" : "Top"};
+	for (int i = 0; i < 3; ++i) {
 		float y = 66.0f + i * 48.0f;
 		int selected = i == panel_cursor;
 		draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, 40, y, 320, 36,
@@ -2377,7 +2385,9 @@ static void draw_top(C3D_RenderTarget *target)
 	} else if (waiting == PLAY_MENU) {
 		draw_choices();
 	} else if (waiting == PLAY_TEXT) {
-		draw_textbox();
+		if (!bottom_text_active()) {
+			draw_textbox();
+		}
 	} else if (display_options.nvl && config.num[NUM_NVL_ACCUMULATE] && nvl_page.length
 		&& (waiting == PLAY_TIMER || waiting == PLAY_WAITBG)) {
 		draw_textbox();
@@ -2390,6 +2400,10 @@ static void draw_top(C3D_RenderTarget *target)
 	} else if (auto_mode && panel == PANEL_NONE && waiting != PLAY_END) {
 		draw_line("AUTO", 360, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
 	}
+	if (bottom_text_active() && panel == PANEL_NONE && notice[0] != '\0') {
+		/* The bottom screen is full of dialogue in this layout, so notices go here. */
+		draw_line(notice, 6, 226, 0.4f, C2D_Color32(255, 200, 120, 255), Z_HEADER_TEXT, TOP_W - 12);
+	}
 }
 
 static const Button play_buttons[] = {
@@ -2400,6 +2414,15 @@ static const Button play_buttons[] = {
 	{14, 130, 292, 38, "Auto  (Y)"},
 };
 #define AUTO_BUTTON 4
+/* Slim strip along the bottom edge when the dialogue is shown on the bottom screen. */
+#define STRIP_Y 208.0f
+static const Button strip_buttons[] = {
+	{4, 208, 60, 28, "Menu"},
+	{68, 208, 60, 28, "Log"},
+	{132, 208, 60, 28, "Hide"},
+	{196, 208, 60, 28, "Quit"},
+	{260, 208, 56, 28, "Auto"},
+};
 #define COUNT_OF(array) (int)(sizeof(array) / sizeof((array)[0]))
 
 static void draw_button_box(const Button *button, int selected)
@@ -2409,6 +2432,80 @@ static void draw_button_box(const Button *button, int selected)
 		selected ? theme_accent() : theme_item(), Z_BOX);
 	draw_line(button->label, button->x + 12, button->y + button->h / 2.0f - 9.0f, 0.55f,
 		selected && !skinned ? theme_dark_text() : theme_text(), Z_TEXT, button->w - 24);
+}
+
+static void draw_strip_button(const Button *button, int selected)
+{
+	draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, button->x, button->y, button->w, button->h,
+		selected ? theme_accent() : theme_item(), Z_BOX);
+	float previous_scale = measure_scale;
+	measure_scale = 0.45f;
+	float width = measure_text(button->label, strlen(button->label), NULL);
+	measure_scale = previous_scale;
+	draw_line(button->label, button->x + (button->w - width) / 2.0f, button->y + 6.0f, 0.45f,
+		selected && !ui_image(IMG_ITEM_SEL) ? theme_dark_text() : theme_text(), Z_TEXT, 0.0f);
+}
+
+/* Dialogue panel filling the bottom screen above the button strip (bottom-text layout). */
+static void draw_bottom_dialogue(void)
+{
+	GameConfig defaults;
+	config_defaults(&defaults);
+	int custom = display_options_use_custom(&display_options, current_textbox_available());
+	const int *n = custom ? config.num : defaults.num;
+	const float bw = BOTTOM_W, bh = STRIP_Y - 4.0f;
+	u32 fill = custom && config.has_panel ? rgb_color(config.panel, 235) : C2D_Color32(8, 14, 20, 235);
+	rect(0, 0, bw, bh, fill, Z_BOX);
+	rect(0, bh - 2.0f, bw, 2.0f, custom ? theme_accent() : COLOR_ACCENT, Z_BOX);
+	const u32 dim = C2D_Color32(150, 170, 165, 255);
+	if (ui_hidden) {
+		draw_line("Text hidden - press B or A", 12, 12, 0.45f, dim, Z_TEXT, 0.0f);
+		return;
+	}
+	if (waiting == PLAY_MENU) {
+		draw_line("Choose on the top screen", 12, 12, 0.5f, theme_accent(), Z_TEXT, 0.0f);
+		draw_line("D-pad choose   A confirm", 12, 36, 0.45f, dim, Z_TEXT, 0.0f);
+		return;
+	}
+	if (waiting != PLAY_TEXT) {
+		return;
+	}
+	float face_inset = 0.0f;
+	for (int index = 0; index < MAX_SPRITES; ++index) {
+		const Sprite *sprite = &scene.sprites[index];
+		if (!sprite->active || strcmp(sprite->pos, "face") != 0 || sprite->alpha <= 0.0f) continue;
+		Picture *picture = get_picture("sprites", sprite->asset);
+		if (picture == NULL) continue;
+		float scale = fminf(1.0f, fminf(76.0f / (float)picture->width, 96.0f / (float)picture->height));
+		C2D_ImageTint tint;
+		C2D_AlphaImageTint(&tint, sprite->alpha);
+		C2D_DrawImageAt(picture->image, 8.0f, 8.0f, Z_BOX + 0.03f, &tint, scale, scale);
+		face_inset = fmaxf(face_inset, (float)picture->width * scale + 16.0f);
+	}
+	int named = event.speaker[0] != '\0';
+	float text_x = fmaxf(12.0f, face_inset);
+	if (named) {
+		draw_line(event.speaker, text_x, 8.0f, (float)n[NUM_NAME_SIZE] / 100.0f * 1.1f,
+			event.color != 0 || custom ? speaker_color(event.color) : COLOR_ACCENT, Z_TEXT, 0.0f);
+	}
+	float text_y = named ? 34.0f : 12.0f;
+	float width = bw - text_x - 12.0f;
+	float scale = (float)n[NUM_TEXT_SIZE] / 100.0f * 1.15f;
+	u32 color = custom && config.has_text ? theme_text() : C2D_Color32(235, 235, 235, 255);
+	char shown[GS_TEXT_LEN];
+	size_t length = utf8_prefix(event.text, (size_t)chars_shown);
+	memcpy(shown, event.text, length);
+	shown[length] = '\0';
+	const char *visible_text = shown;
+	while (*visible_text == '\n' || *visible_text == '\r') ++visible_text;
+	scale = fit_text_scale(event.text, width, bh - text_y - 6.0f, scale);
+	Picture *advance = advance_available ? ui_image(IMG_ADVANCE) : NULL;
+	if (advance != NULL) {
+		draw_dialogue_with_advance(visible_text, text_x, text_y, width, scale, color,
+			advance, event.text[length] == '\0');
+	} else {
+		draw_wrapped(visible_text, text_x, text_y, width, scale, color, Z_TEXT);
+	}
 }
 
 static int list_first(int cursor, int total)
@@ -2537,6 +2634,13 @@ static void draw_bottom(C3D_RenderTarget *target)
 		return;
 	}
 
+	if (bottom_text_active()) {
+		draw_bottom_dialogue();
+		for (int index = 0; index < COUNT_OF(strip_buttons); ++index) {
+			draw_strip_button(&strip_buttons[index], index == AUTO_BUTTON && auto_mode);
+		}
+		return;
+	}
 	draw_line(game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
 	for (int index = 0; index < COUNT_OF(play_buttons); ++index) {
 		draw_button_box(&play_buttons[index], index == AUTO_BUTTON && auto_mode);
@@ -2746,8 +2850,11 @@ static void handle_panel_input(u32 down, u32 repeat)
 			close_panel();
 			break;
 		}
-		if (repeat & (KEY_DUP | KEY_DDOWN)) {
-			panel_cursor = 1 - panel_cursor;
+		if (repeat & KEY_DDOWN) {
+			panel_cursor = (panel_cursor + 1) % 3;
+		}
+		if (repeat & KEY_DUP) {
+			panel_cursor = (panel_cursor + 2) % 3;
 		}
 		if (down & (KEY_A | KEY_DLEFT | KEY_DRIGHT)) {
 			toggle_display_option();
@@ -2870,7 +2977,8 @@ static void handle_play_input(u32 down, u32 held, float dt)
 		touchPosition touch;
 		hidTouchRead(&touch);
 		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT, PANEL_NONE};
-		int button = hit_button(play_buttons, COUNT_OF(play_buttons), &touch);
+		int button = bottom_text_active() ? hit_button(strip_buttons, COUNT_OF(strip_buttons), &touch)
+			: hit_button(play_buttons, COUNT_OF(play_buttons), &touch);
 		if (button == 2) {
 			ui_hidden = !ui_hidden;
 			return;

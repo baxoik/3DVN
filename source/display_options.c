@@ -24,6 +24,7 @@ void display_options_defaults(DisplayOptions *options)
 {
 	options->custom_textbox = true;
 	options->nvl = false;
+	options->bottom_text = false;
 }
 
 bool display_options_use_custom(const DisplayOptions *options, bool available)
@@ -41,8 +42,9 @@ DisplayOptionsResult display_options_load(const char *path, DisplayOptions *opti
 {
 	char data[64];
 	size_t length, pos;
-	int seen_custom = 0, seen_nvl = 0;
+	int seen_custom = 0, seen_nvl = 0, seen_bottom = 0;
 	DisplayOptions parsed;
+	parsed.bottom_text = false;
 	FILE *file;
 	int recovered = 0;
 
@@ -103,6 +105,12 @@ DisplayOptionsResult display_options_load(const char *path, DisplayOptions *opti
 		} else if (!seen_nvl && strcmp(data + start, "nvl=1") == 0) {
 			parsed.nvl = true;
 			seen_nvl = 1;
+		} else if (!seen_bottom && strcmp(data + start, "bottom_text=0") == 0) {
+			parsed.bottom_text = false;
+			seen_bottom = 1;
+		} else if (!seen_bottom && strcmp(data + start, "bottom_text=1") == 0) {
+			parsed.bottom_text = true;
+			seen_bottom = 1;
 		} else {
 			return DISPLAY_OPTIONS_MALFORMED;
 		}
@@ -142,8 +150,8 @@ DisplayOptionsResult display_options_save(const char *path, const DisplayOptions
 		free(backup);
 		return DISPLAY_OPTIONS_IO_ERROR;
 	}
-	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\n",
-		options->custom_textbox ? 1 : 0, options->nvl ? 1 : 0) < 0;
+	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\nbottom_text=%d\n",
+		options->custom_textbox ? 1 : 0, options->nvl ? 1 : 0, options->bottom_text ? 1 : 0) < 0;
 	if (fclose(file) != 0)
 		failed = 1;
 	if (!failed) {
