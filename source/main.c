@@ -29,7 +29,9 @@ u32 __stacksize__ = 256 * 1024;
 #define TOP_W 400.0f
 #define TOP_H 240.0f
 #define BOTTOM_W 320.0f
+#ifndef ROOT_DIR   /* SDL builds (PC, Wii U) pass their own */
 #define ROOT_DIR "sdmc:/3ds/3dvn"
+#endif
 #define GAMES_DIR ROOT_DIR "/games"
 #define SAVES_DIR ROOT_DIR "/saves"
 #define SETTINGS_DIR ROOT_DIR "/settings"
@@ -179,7 +181,11 @@ static void test_log(const char *format, ...)
 {
 	static FILE *file;
 	if (file == NULL) {
+#ifdef VN_SDL
+		file = fopen(ROOT_DIR "/3dvn-test.log", "a");
+#else
 		file = fopen("sdmc:/3dvn-test.log", "a");
+#endif
 		if (file == NULL) return;
 	}
 	va_list args;
@@ -474,6 +480,11 @@ static Picture *create_picture(int width, int height)
 /* RGBA pixels of exactly picture->width x picture->height, swizzled into the GPU's tiled layout. */
 static void fill_picture(Picture *picture, const unsigned char *pixels)
 {
+#ifdef VN_SDL
+	/* SDL builds keep textures linear; the platform layer uploads them. */
+	C3D_TexUploadRGBA(&picture->tex, pixels, picture->width, picture->height);
+	return;
+#endif
 	static unsigned char lut[8][8];
 	static int lut_ready;
 	if (!lut_ready) {

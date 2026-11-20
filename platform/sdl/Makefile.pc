@@ -1,0 +1,14 @@
+# PC build of 3DVN via the SDL2 platform layer.
+#   make -f platform/sdl/Makefile.pc            -> ./3dvn-pc
+# Games go in ./3dvn/games/<name>/ (override with ROOT_DIR=...).
+ROOT_DIR ?= ./3dvn
+CC ?= cc
+CFLAGS += -O2 -Wall -DVN_SDL -DROOT_DIR=\"$(ROOT_DIR)\" -Iplatform/sdl/include -Isource $(shell sdl2-config --cflags)
+LDLIBS += $(shell sdl2-config --libs) -lSDL2_ttf -lm
+SOURCES := $(wildcard source/*.c) platform/sdl/sdl_compat.c
+
+3dvn-pc: $(SOURCES) $(wildcard source/*.h) platform/sdl/sdl_compat.h
+	$(CC) $(CFLAGS) -o $@ $(SOURCES) $(LDLIBS)
+
+clean:
+	rm -f 3dvn-pc
