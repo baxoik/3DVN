@@ -1526,7 +1526,12 @@ static int switch_script(const char *name)
 		snprintf(notice, sizeof(notice), "Could not read %.40s", path + strlen(game_dir) + 1);
 		return 0;
 	}
+	/* The save fingerprint covers main.3vs and its includes as loaded at start. Includes of
+	   chapter scripts must not change it, or saves made in a chapter fail to load
+	   ("different script version") once the game is restarted. */
+	unsigned fingerprint = script_hash;
 	GsProgram *next = gs_compile_ex((const char *)source, load_include, NULL, error, sizeof(error));
+	script_hash = fingerprint;
 	free(source);
 	if (next == NULL) {
 		snprintf(notice, sizeof(notice), "%.40s: %.60s", name, error);
