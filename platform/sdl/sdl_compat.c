@@ -245,6 +245,7 @@ void C3D_TexUploadHD(C3D_Tex *tex, const unsigned char *pixels, int width, int h
 	int logical_w, int logical_h)
 {
 	void *copy = malloc((size_t)width * height * 4);
+	if (copy == NULL) boot_log("%u ms: out of memory for a %dx%d HD image", (unsigned)SDL_GetTicks(), width, height);
 	if (copy == NULL || logical_w <= 0 || logical_h <= 0) {
 		free(copy);
 		return;
@@ -278,7 +279,11 @@ static SDL_Texture *texture_for(C3D_Tex *tex, int output)
 		SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, tex->linear_filter ? "1" : "0");
 		SDL_Texture *texture = SDL_CreateTexture(outputs[output].renderer, SDL_PIXELFORMAT_RGBA32,
 			SDL_TEXTUREACCESS_STATIC, w, h);
-		if (texture == NULL) return NULL;
+		if (texture == NULL) {
+			boot_log("%u ms: texture %dx%d for output %d failed: %s", (unsigned)SDL_GetTicks(), w, h,
+				output, SDL_GetError());
+			return NULL;
+		}
 		SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
 		SDL_UpdateTexture(texture, NULL, pixels, w * 4);
 		handle->texture[output] = texture;
@@ -709,6 +714,11 @@ void C3D_FrameEnd(u8 flags)
 	/* Hold to 60 frames per second when the renderer has no vsync (e.g. off-screen tests). */
 	static Uint64 last;
 	Uint64 now = SDL_GetTicks64();
+	static int slow_logged;
+	if (last != 0 && now - last > 50 && slow_logged < 300) {   /* diagnosing hitches on console */
+		++slow_logged;
+		boot_log("%u ms: slow frame %u ms", (unsigned)now, (unsigned)(now - last));
+	}
 	if (last != 0 && now - last < 16) SDL_Delay((Uint32)(16 - (now - last)));
 	last = SDL_GetTicks64();
 }
