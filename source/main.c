@@ -303,6 +303,97 @@ static void mark_read(const char *script, int pc)
 	++read_dirty;
 }
 
+/* Global variables: number variables whose names start with "g_" keep their value across
+   new games and saves of the same game (e.g. endings seen, routes unlocked). They live in
+   SAVES_DIR/<game>.3vglobal as "name value" lines, are put into the state when a game
+   starts or a save is loaded, and the file is rewritten whenever one changes. */
+#define MAX_GLOBALS 64
+static struct { char name[GS_NAME_LEN]; long number; } globals[MAX_GLOBALS];
+static int global_count;
+
+static int is_global_name(const char *name)
+{
+	return name[0] == 'g' && name[1] == '_';
+}
+
+static void globals_path(char *path, size_t size)
+{
+	snprintf(path, size, SAVES_DIR "/%s.3vglobal", game_name);
+}
+
+static void globals_load(void)
+{
+	global_count = 0;
+	char path[220], line[96];
+	globals_path(path, sizeof(path));
+	FILE *file = fopen(path, "r");
+	if (file == NULL) return;
+	while (global_count < MAX_GLOBALS && fgets(line, sizeof(line), file) != NULL) {
+		char name[GS_NAME_LEN];
+		long number;
+		if (sscanf(line, "%31s %ld", name, &number) == 2 && is_global_name(name)) {
+			snprintf(globals[global_count].name, sizeof(globals[0].name), "%s", name);
+			globals[global_count++].number = number;
+		}
+	}
+	fclose(file);
+}
+
+static void globals_save(void)
+{
+	if (game_name[0] == '\0') return;
+	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST) || (mkdir(SAVES_DIR, 0777) != 0 && errno != EEXIST)) return;
+	char path[220], temporary[230];
+	globals_path(path, sizeof(path));
+	snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+	FILE *file = fopen(temporary, "w");
+	if (file == NULL) return;
+	int failed = 0;
+	for (int index = 0; index < global_count && !failed; ++index) {
+		failed = fprintf(file, "%s %ld\n", globals[index].name, globals[index].number) < 0;
+	}
+	if (fclose(file) != 0) failed = 1;
+	if (!failed) {
+		remove(path);
+		failed = rename(temporary, path) != 0;
+	}
+	if (failed) remove(temporary);
+}
+
+/* Puts the stored globals into the running state (new game or loaded save). */
+static void globals_apply(void)
+{
+	for (int index = 0; index < global_count; ++index) {
+		gs_variable_set_number(&state, globals[index].name, globals[index].number);
+	}
+}
+
+/* Stores globals the script changed; called after the script runs. */
+static void globals_sync(void)
+{
+	int changed = 0;
+	for (int index = 0; index < state.var_count; ++index) {
+		const GsVar *var = &state.vars[index];
+		if (!is_global_name(var->name) || var->value.is_str) continue;
+		int found = 0;
+		for (int known = 0; known < global_count && !found; ++known) {
+			if (strcmp(globals[known].name, var->name) == 0) {
+				found = 1;
+				if (globals[known].number != var->value.num) {
+					globals[known].number = var->value.num;
+					changed = 1;
+				}
+			}
+		}
+		if (!found && global_count < MAX_GLOBALS) {
+			snprintf(globals[global_count].name, sizeof(globals[0].name), "%s", var->name);
+			globals[global_count++].number = var->value.num;
+			changed = 1;
+		}
+	}
+	if (changed) globals_save();
+}
+
 static void read_path(char *path, size_t size)
 {
 	snprintf(path, size, SETTINGS_DIR "/%s.3vread", game_name);
@@ -1253,6 +1344,7 @@ static int load_slot(int slot)
 		clear_bgloop();
 	}
 	state = data->state;
+	globals_apply();
 	scene = data->scene;
 	event = data->event;
 	backlog = data->backlog;
@@ -1457,6 +1549,7 @@ static void start_game(const char *name)
 	load_game_extras();
 	load_display_options();
 	read_load();
+	globals_load();
 	gs_state_init(program, &state);
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
@@ -1481,6 +1574,7 @@ static void start_game(const char *name)
 static void begin_game(void)
 {
 	gs_state_init(program, &state);
+	globals_apply();
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
 	memset(&event, 0, sizeof(event));
@@ -1725,6 +1819,7 @@ static void advance(void)
 {
 	for (;;) {
 		gs_next(program, &state, &event);
+		if (!extras_mode) globals_sync();
 		switch (event.type) {
 		case GS_EV_PAGE:
 			nvl_page_clear(&nvl_page);

@@ -304,6 +304,14 @@ static int is_truthy(const GsValue *value)
 	return value->is_str ? value->str[0] != '\0' : value->num != 0;
 }
 
+int gs_variable_set_number(GsState *state, const char *name, long number)
+{
+	GsValue value;
+	memset(&value, 0, sizeof(value));
+	value.num = number;
+	return set_var(state, name, &value);
+}
+
 const char *gs_variable_text(const GsState *state, const char *name)
 {
 	const GsValue *value = find_var(state, name);

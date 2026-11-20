@@ -86,6 +86,8 @@ void gs_free(GsProgram *program);
 void gs_state_init(const GsProgram *program, GsState *state);
 /* An unset variable is false; strings and numbers use script truthiness. */
 int gs_variable_truthy(const GsState *state, const char *name);
+/* Sets a number variable (creating it); returns 0 when the variable table is full. */
+int gs_variable_set_number(GsState *state, const char *name, long number);
 /* Text of a string variable, or NULL when it is unset or numeric. */
 const char *gs_variable_text(const GsState *state, const char *name);
 

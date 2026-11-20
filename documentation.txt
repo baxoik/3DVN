@@ -303,6 +303,14 @@ blocks. Words are separated by spaces; text containing spaces goes in
     set name = "Ada"
     set score += 10
     set title = "Dr. " + name
+  Global variables: a number variable whose name starts with g_ keeps its
+  value across new games and saves of the same game, for things like endings
+  seen or routes unlocked. It is stored in saves/<game>.3vglobal when it
+  changes and is put back whenever a game starts or a save is loaded (the
+  stored value wins over the one in the save). Delete that file to reset.
+    if g_good_end == 1
+      choice "Epilogue"
+    end
 
 6.7 Conditions and loops
     if EXPRESSION
