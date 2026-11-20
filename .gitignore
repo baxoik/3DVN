@@ -21,6 +21,7 @@
 !/tests/test_inspect_mahoyo_opening_timeline.py
 !/tests/check_scripts.c
 !/tests/test_display_options.c
+!/tests/test_wav_adpcm.c
 !/tests/test_check_scripts.py
 !/tests/test_build_mahoyo_story_preview.py
 !/tests/test_recover_mahoyo_missing_images.py

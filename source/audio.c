@@ -19,7 +19,7 @@
 #define SFX_SLOTS 4
 #define STREAM_BUFFERS 4
 #define STREAM_BYTES (32 * 1024)
-#define MAX_SFX_BYTES (2 * 1024 * 1024)
+#define MAX_SFX_BYTES (4 * 1024 * 1024)   /* decoded size */
 #define SFX_STREAM_BUFFERS 2
 #define SFX_STREAM_BYTES (16 * 1024)
 
@@ -31,6 +31,9 @@ typedef struct {
 	void *memory;
 	ndspWaveBuf buffers[STREAM_BUFFERS];
 	long position;
+	unsigned char *block;          /* ADPCM: one compressed block ... */
+	short *decoded;                /* ... and its decoded frames */
+	int decoded_frames, decoded_used;
 	float volume, target, rate;
 	int stopping;
 } Music;
@@ -47,6 +50,22 @@ static int ready;
 static Music music;
 static Sfx sfx[SFX_SLOTS];
 static int next_sfx;
+
+/* WAV PCM data is little-endian; the mixer reads native samples (big-endian on Wii U). */
+static void pcm16_to_native(void *data, size_t bytes)
+{
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	unsigned char *p = data;
+	for (size_t i = 0; i + 1 < bytes; i += 2) {
+		unsigned char t = p[i];
+		p[i] = p[i + 1];
+		p[i + 1] = t;
+	}
+#else
+	(void)data;
+	(void)bytes;
+#endif
+}
 
 static u16 ndsp_format(const WavInfo *info)
 {
@@ -89,6 +108,8 @@ static void close_music(void)
 		fclose(music.file);
 	}
 	linearFree(music.memory);
+	free(music.block);
+	free(music.decoded);
 	memset(&music, 0, sizeof(music));
 }
 
@@ -182,7 +203,32 @@ static void feed_music(void)
 			music.position = 0;
 			filled += (size_t)frames * (size_t)music.info.frame_size;
 		}
-		while (music.vorbis == NULL && filled < want) {
+		int empty_blocks = 0;   /* guards against a file with no decodable block */
+		while (music.vorbis == NULL && music.info.adpcm && filled < want && empty_blocks < 4) {
+			if (music.decoded_used >= music.decoded_frames) {
+				if (music.position >= music.info.data_size) music.position = 0;   /* loop */
+				long left = music.info.data_size - music.position;
+				size_t size = left < music.info.block_align ? (size_t)left : (size_t)music.info.block_align;
+				fseek(music.file, music.info.data_offset + music.position, SEEK_SET);
+				size_t got = fread(music.block, 1, size, music.file);
+				music.position += (long)size;
+				music.decoded_frames = wav_adpcm_block(&music.info, music.block, got, music.decoded);
+				music.decoded_used = 0;
+				if (music.decoded_frames <= 0) {
+					++empty_blocks;
+					continue;
+				}
+				empty_blocks = 0;
+			}
+			size_t frames = (want - filled) / (size_t)music.info.frame_size;
+			size_t have = (size_t)(music.decoded_frames - music.decoded_used);
+			if (frames > have) frames = have;
+			memcpy(target + filled, music.decoded + (size_t)music.decoded_used * music.info.channels,
+				frames * (size_t)music.info.frame_size);
+			music.decoded_used += (int)frames;
+			filled += frames * (size_t)music.info.frame_size;
+		}
+		while (music.vorbis == NULL && !music.info.adpcm && filled < want) {
 			long left = music.info.data_size - music.position;
 			if (left <= 0) {
 				music.position = 0;
@@ -205,6 +251,8 @@ static void feed_music(void)
 			for (size_t byte = 0; byte < filled; ++byte) {
 				target[byte] = (u8)(target[byte] - 128);
 			}
+		} else if (music.vorbis == NULL && !music.info.adpcm) {
+			pcm16_to_native(target, filled);
 		}
 		memset(buffer, 0, sizeof(*buffer));
 		buffer->data_vaddr = target;
@@ -265,13 +313,25 @@ int audio_play_music(const char *path, float fade_seconds, char *err, int err_si
 		return 0;
 	}
 	void *memory = linearAlloc((size_t)STREAM_BUFFERS * STREAM_BYTES);
-	if (memory == NULL) {
+	unsigned char *block = NULL;
+	short *decoded = NULL;
+	if (memory != NULL && vorbis == NULL && info.adpcm) {
+		block = malloc((size_t)info.block_align);
+		decoded = malloc((size_t)info.samples_per_block * (size_t)info.frame_size);
+	}
+	if (memory == NULL || (vorbis == NULL && info.adpcm && (block == NULL || decoded == NULL))) {
+		if (memory != NULL) linearFree(memory);
+		free(block);
+		free(decoded);
 		if (vorbis != NULL) stb_vorbis_close(vorbis); else fclose(file);
 		say(err, err_size, "out of audio memory");
 		return 0;
 	}
 
 	close_music();
+	music.block = block;
+	music.decoded = decoded;
+	music.decoded_frames = music.decoded_used = 0;
 	music.active = 1;
 	music.file = file;
 	music.vorbis = vorbis;
@@ -372,29 +432,46 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 		say(err, err_size, reason);
 		return 0;
 	}
-	if (info.data_size > MAX_SFX_BYTES) {
+	long bytes = info.frames * info.frame_size;   /* decoded size */
+	if (bytes > MAX_SFX_BYTES) {
 		fclose(file);
-		say(err, err_size, "sound effect too long (2 MB max)");
+		say(err, err_size, "sound effect too long (4 MB max)");
 		return 0;
 	}
-	u8 *memory = linearAlloc((size_t)info.data_size);
-	if (memory == NULL) {
+	u8 *memory = linearAlloc((size_t)bytes);
+	u8 *packed = info.adpcm ? malloc((size_t)info.data_size) : memory;
+	if (memory == NULL || packed == NULL) {
+		if (memory != NULL) linearFree(memory);
 		fclose(file);
 		say(err, err_size, "out of audio memory");
 		return 0;
 	}
 	fseek(file, info.data_offset, SEEK_SET);
-	size_t got = fread(memory, 1, (size_t)info.data_size, file);
+	size_t got = fread(packed, 1, (size_t)info.data_size, file);
 	fclose(file);
 	if (got != (size_t)info.data_size) {
+		if (packed != memory) free(packed);
 		linearFree(memory);
 		say(err, err_size, "truncated audio file");
 		return 0;
+	}
+	if (info.adpcm) {
+		long frames = 0;
+		for (long offset = 0; offset < info.data_size && frames < info.frames; offset += info.block_align) {
+			long size = info.data_size - offset < info.block_align ? info.data_size - offset : info.block_align;
+			frames += wav_adpcm_block(&info, packed + offset, (size_t)size,
+				(short *)memory + (size_t)frames * (size_t)info.channels);
+		}
+		free(packed);
+		info.data_size = frames * info.frame_size;
+		got = (size_t)info.data_size;
 	}
 	if (info.bits == 8) {
 		for (size_t byte = 0; byte < got; ++byte) {
 			memory[byte] = (u8)(memory[byte] - 128);
 		}
+	} else if (!info.adpcm) {
+		pcm16_to_native(memory, got);
 	}
 
 	int channel = SFX_FIRST + next_sfx;

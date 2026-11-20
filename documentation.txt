@@ -404,8 +404,14 @@ blocks. Words are separated by spaces; text containing spaces goes in
 7. AUDIO AND VIDEO
 ------------------------------------------------------------------------------
 7.1 Audio
-Supported: uncompressed PCM WAV, 8 or 16 bit, mono or stereo, 4000-48000 Hz.
-(Convert other formats first, e.g.:  ffmpeg -i in.ogg -ar 32000 out.wav)
+Supported, mono or stereo, 4000-48000 Hz:
+  - WAV with uncompressed PCM, 8 or 16 bit
+  - WAV with MS-ADPCM (4 bit), as many older games ship their audio
+  - Ogg Vorbis (.ogg; tried before .wav when both exist)
+(Convert other formats first, e.g.:  ffmpeg -i in.mp3 out.ogg)
+Sound effects and voices are decoded into memory, at most 4 MB each once
+decoded (about 21 seconds of 48 kHz stereo); longer ones should be Ogg, which
+is streamed.
 
 Music is streamed from the SD card, so length is not limited by memory, and
 loops forever. One music track plays at a time; starting another replaces it
