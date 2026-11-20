@@ -2030,6 +2030,35 @@ static void draw_panel(int image, float x, float y, float w, float h, u32 color,
 	}
 }
 
+/* The first `visible` bytes of `full`, with a line break wherever the whole text wraps, so a
+   word being typed out does not start at the end of one line and jump to the next once it no
+   longer fits. Lines are measured with 2 px to spare so the renderer keeps these breaks. */
+static void reveal_with_breaks(const char *full, size_t visible, float width, float scale,
+	char *out, size_t size)
+{
+	unsigned short starts[64], ends[64];
+	float previous_scale = measure_scale;
+	measure_scale = scale;
+	int count = wrap_text_lines(full, width - 2.0f, measure_text, NULL, starts, ends, 64);
+	measure_scale = previous_scale;
+	size_t used = 0;
+	if (count <= 0 || count >= 64) {   /* fall back to the plain prefix */
+		used = visible < size - 1 ? visible : size - 1;
+		memcpy(out, full, used);
+		out[used] = '\0';
+		return;
+	}
+	for (int i = 0; i < count && starts[i] < visible; ++i) {
+		if (i > 0 && used + 1 < size) out[used++] = '\n';
+		size_t end = ends[i] < visible ? ends[i] : visible;
+		size_t n = end > starts[i] ? end - starts[i] : 0;
+		if (used + n >= size) n = size - 1 - used;
+		memcpy(out + used, full + starts[i], n);
+		used += n;
+	}
+	out[used] = '\0';
+}
+
 static void draw_wrapped(const char *text, float x, float y, float width, float scale, u32 color, float z)
 {
 	if (text[0] == '\0') {
@@ -2158,12 +2187,19 @@ static void draw_nvl_page(float x, float y, float width, float height, float sca
 		if (end <= length) length = end;
 		complete = event.text[visible] == '\0';
 	}
-	memcpy(shown, nvl_page.text, length);
-	shown[length] = '\0';
+	/* Wrap the whole page (with the current line complete) and show only the revealed part,
+	   so a word being typed out does not start on one line and jump to the next. */
+	memcpy(shown, nvl_page.text, nvl_page.length);
+	shown[nvl_page.length] = '\0';
 	unsigned short starts[NVL_PAGE_MAX_BYTES + 1], ends[NVL_PAGE_MAX_BYTES + 1];
 	float previous_scale = measure_scale;
 	measure_scale = scale;
 	int count = wrap_text_lines(shown, width, measure_text, NULL, starts, ends, NVL_PAGE_MAX_BYTES + 1);
+	while (count > 0 && starts[count - 1] >= length && length > 0) --count;
+	for (int i = 0; i < count; ++i) {
+		if (ends[i] > length) ends[i] = (unsigned short)length;
+	}
+	shown[length] = '\0';
 	C2D_Text metric;
 	float line_height;
 	C2D_TextBufClear(measure_buf);
@@ -2396,17 +2432,21 @@ static void draw_textbox(void)
 		draw_nvl_page(bx + text_x, by + text_y, width, bh - text_y - n[NUM_NVL_MARGIN_Y], scale, color);
 		return;
 	}
-	char shown[GS_TEXT_LEN];
+	char shown[GS_TEXT_LEN + 64];
 	size_t length = utf8_prefix(event.text, (size_t)chars_shown);
-	memcpy(shown, event.text, length);
-	shown[length] = '\0';
-	const char *visible_text = shown;
+	const char *full = event.text;
+	size_t visible = length;
 	if (config.num[NUM_NVL_ACCUMULATE] && !display_options.nvl) {
-		while (*visible_text == '\n' || *visible_text == '\r') ++visible_text;
+		while (*full == '\n' || *full == '\r') {
+			++full;
+			if (visible > 0) --visible;
+		}
 	}
 	if (!display_options.nvl) {
 		scale = fit_text_scale(event.text, width, bh - text_y - 4.0f, scale);
 	}
+	reveal_with_breaks(full, visible, width, scale, shown, sizeof(shown));
+	const char *visible_text = shown;
 	Picture *advance = advance_available ? ui_image(IMG_ADVANCE) : NULL;
 	if (advance != NULL) {
 		draw_dialogue_with_advance(visible_text, bx + text_x, by + text_y, width, scale, color,
@@ -2935,13 +2975,17 @@ static void draw_bottom_dialogue(void)
 	float width = bw - text_x - 12.0f;
 	float scale = (float)n[NUM_TEXT_SIZE] / 100.0f * 1.15f;
 	u32 color = custom && config.has_text ? theme_text() : C2D_Color32(235, 235, 235, 255);
-	char shown[GS_TEXT_LEN];
+	char shown[GS_TEXT_LEN + 64];
 	size_t length = utf8_prefix(event.text, (size_t)chars_shown);
-	memcpy(shown, event.text, length);
-	shown[length] = '\0';
-	const char *visible_text = shown;
-	while (*visible_text == '\n' || *visible_text == '\r') ++visible_text;
+	const char *full = event.text;
+	size_t visible = length;
+	while (*full == '\n' || *full == '\r') {
+		++full;
+		if (visible > 0) --visible;
+	}
 	scale = fit_text_scale(event.text, width, bh - text_y - 6.0f, scale);
+	reveal_with_breaks(full, visible, width, scale, shown, sizeof(shown));
+	const char *visible_text = shown;
 	Picture *advance = advance_available ? ui_image(IMG_ADVANCE) : NULL;
 	if (advance != NULL) {
 		draw_dialogue_with_advance(visible_text, text_x, text_y, width, scale, color,
