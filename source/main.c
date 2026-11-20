@@ -3046,7 +3046,7 @@ static void draw_bottom_controls(void)
 		draw_choice_buttons();
 		return;
 	}
-	draw_line(game_name, 12, 10, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 24);
+	draw_line(config.title[0] != '\0' ? config.title : game_name, 12, 10, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 24);
 	draw_line(ui_hidden ? "Text hidden - tap or press A" : "Tap here or press A: next line",
 		12, 44, 0.45f, theme_text(), Z_TEXT, BOTTOM_W - 24);
 	draw_line("Hold R: fast-forward      Y: auto", 12, 66, 0.42f, dim, Z_TEXT, BOTTOM_W - 24);
@@ -3342,7 +3342,7 @@ static void draw_bottom(C3D_RenderTarget *target)
 		return;
 	}
 	if (panel != PANEL_NONE) {
-		draw_line(game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
+		draw_line(config.title[0] != '\0' ? config.title : game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
 		draw_line("Menu is on the top screen", 14, 40, 0.45f, dim, Z_TEXT, 0.0f);
 		if (notice[0] != '\0') {
 			draw_line(notice, 14, 212, 0.45f, C2D_Color32(255, 200, 120, 255), Z_TEXT, BOTTOM_W - 28);
@@ -3368,7 +3368,7 @@ static void draw_bottom(C3D_RenderTarget *target)
 		draw_line("Tap a choice, or D-pad + A", 14, 216, 0.42f, dim, Z_TEXT, 0.0f);
 		return;
 	}
-	draw_line(game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
+	draw_line(config.title[0] != '\0' ? config.title : game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
 	for (int index = 0; index < COUNT_OF(play_buttons); ++index) {
 		draw_button_box(&play_buttons[index], index == AUTO_BUTTON && auto_mode);
 	}
