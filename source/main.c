@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -619,6 +620,12 @@ static Picture *load_picture(const char *path)
 		&& stbi_info_from_memory(file_data, (int)size, &width, &height, &channels)) {
 		char hd_path[600];
 		snprintf(hd_path, sizeof(hd_path), "%s/hd%s", game_dir, path + root_length);
+		/* the HD file may use the other format (e.g. lossless .png for a small .jpg) */
+		char *dot = strrchr(hd_path, '.');
+		if (!vn_exists(hd_path) && dot != NULL && strlen(dot) == 4) {
+			const char *other = !strcasecmp(dot, ".jpg") ? ".png" : !strcasecmp(dot, ".png") ? ".jpg" : NULL;
+			if (other != NULL) memcpy(dot, other, 4);
+		}
 		size_t hd_size;
 		unsigned char *hd_data = vn_exists(hd_path) ? read_file(hd_path, &hd_size) : NULL;
 		int hd_w, hd_h, hd_channels;
