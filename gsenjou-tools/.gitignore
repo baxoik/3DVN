@@ -1,0 +1,12 @@
+# Local-only: these contain or are built from game content. Never commit them.
+voice_overrides.tsv
+heads.txt
+silent-lines.md
+check_scripts
+voiced/
+emu/runs/
+emu/Azahar/
+emu/shots/
+emu/*.so
+emu/*.3dsx
+emu/core.log
