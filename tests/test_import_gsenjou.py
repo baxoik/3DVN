@@ -38,6 +38,18 @@ class GSenjouOverlayTests(unittest.TestCase):
             with Image.open(output / "ui" / "textbox.png") as image:
                 self.assertEqual(image.getpixel((200, 45)), (5, 6, 8, 160))
 
+    def test_first_scene_change_in_a_file_hides_sprites_left_by_the_previous_one(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script_dir = root / "source" / "1-raw-scripts"
+            script_dir.mkdir(parents=True)
+            (script_dir / "g02.ks").write_text("@bg storage=bg_02a\n", encoding="utf-8")
+            assets = Assets(str(root / "source"), str(root / "output"), False, False, 22050, 16000)
+            body = Converter(str(root / "source"), assets).convert_file("g02")
+            hides = [line for line in body if line.startswith("hide ")]
+            self.assertEqual(hides, ["hide sll", "hide sl", "hide sc", "hide sr", "hide srr"])
+            self.assertLess(body.index("hide sc"), body.index("bg bg_02a"))
+
     def test_cutin_uses_visible_art_origin_before_scene_clipping(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

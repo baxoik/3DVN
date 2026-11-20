@@ -465,7 +465,9 @@ class Converter:
         body = []
         out = body.append
         referenced = set(re.findall(r'target="?\*(\w+)', "\n".join(lines)))
-        state = {"slots": {}, "all_unknown": False, "speaker": None, "voice": None,
+        # A file can be reached by `script`/`call` with sprites still shown by the previous
+        # one, so the first scene change in each file hides every slot, not only known ones.
+        state = {"slots": {}, "all_unknown": True, "speaker": None, "voice": None,
                  "pending": None, "page_open": False, "segments": 0, "skip": False,
                  "menu": []}
 
