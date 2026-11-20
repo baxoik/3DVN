@@ -78,6 +78,19 @@ out of git (see `.gitignore`).
    `voice_overrides.tsv` (or point `VOICE_OVERRIDES` at it). Keep that file
    local: it quotes dialogue.
 
+## HD images for PC and Wii U (optional)
+
+The converted images are sized for the 3DS (backgrounds 320x240). With the game's
+original images decoded to PNG (any folder layout), `make_hd.py` builds `hd/`:
+
+```sh
+python3 gsenjou-tools/make_hd.py voiced/g-senjou-no-maou path/to/decoded-pngs
+```
+
+Each original is cropped like the small image and checked against it; mismatches and
+cut-ins are skipped. Then pack two archives: with `hd/` for PC / Wii U, and
+`--exclude hd` for the 3DS.
+
 ## Pack it (optional, recommended)
 
 ```sh

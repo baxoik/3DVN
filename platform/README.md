@@ -83,3 +83,11 @@ python3 tools/make_pack.py games/<name> <name>.3vp --ogg   # needs ffmpeg for --
 `--ogg` converts all WAV audio (voices `--voice-quality`, default 2; other audio
 `--music-quality`, default 4) with a conversion cache, then packs. Example: the
 voiced G-Senjou build goes from 2.2 GB in 16,000 files to one 352 MB archive.
+
+## HD images (PC, Wii U)
+
+A game may include `hd/<folder>/<file>` (e.g. `hd/bg/bg_02a.jpg`,
+`hd/sprites/kanon_a_se_04_b.png`): sharper versions of its images. The PC and Wii U
+builds draw them in place of `<folder>/<file>`, at that image's size, so layouts stay
+the same and only detail improves. The 3DS ignores `hd/` (memory); pack a 3DS archive
+with `make_pack.py ... --exclude hd`.

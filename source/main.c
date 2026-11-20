@@ -520,6 +520,30 @@ static Picture *load_picture(const char *path)
 		return NULL;
 	}
 	int width, height, channels;
+#ifdef VN_SDL
+	/* HD images (PC, Wii U): <game>/hd/<folder>/<file> is drawn in place of <folder>/<file>,
+	   at the normal image's size, so layouts are unchanged and only detail improves. */
+	size_t root_length = strlen(game_dir);
+	if (game_dir[0] != '\0' && !strncmp(path, game_dir, root_length) && path[root_length] == '/'
+		&& stbi_info_from_memory(file_data, (int)size, &width, &height, &channels)) {
+		char hd_path[600];
+		snprintf(hd_path, sizeof(hd_path), "%s/hd%s", game_dir, path + root_length);
+		size_t hd_size;
+		unsigned char *hd_data = vn_exists(hd_path) ? read_file(hd_path, &hd_size) : NULL;
+		int hd_w, hd_h, hd_channels;
+		unsigned char *hd_pixels = hd_data != NULL
+			? stbi_load_from_memory(hd_data, (int)hd_size, &hd_w, &hd_h, &hd_channels, 4) : NULL;
+		free(hd_data);
+		Picture *picture = hd_pixels != NULL && width <= 1024 && height <= 1024 ? create_picture(width, height) : NULL;
+		if (picture != NULL) {
+			C3D_TexUploadHD(&picture->tex, hd_pixels, hd_w, hd_h, width, height);
+			stbi_image_free(hd_pixels);
+			free(file_data);
+			return picture;
+		}
+		stbi_image_free(hd_pixels);
+	}
+#endif
 	unsigned char *pixels = stbi_load_from_memory(file_data, (int)size, &width, &height, &channels, 4);
 	free(file_data);
 	if (pixels == NULL) {

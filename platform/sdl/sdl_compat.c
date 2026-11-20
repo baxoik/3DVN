@@ -222,6 +222,7 @@ void C3D_TexDelete(C3D_Tex *tex)
 	}
 	free(handle);
 	free(tex->data);
+	free(tex->hd_data);
 	memset(tex, 0, sizeof(*tex));
 }
 
@@ -240,14 +241,35 @@ void C3D_TexUploadRGBA(C3D_Tex *tex, const unsigned char *pixels, int width, int
 	tex->dirty = 1;
 }
 
+void C3D_TexUploadHD(C3D_Tex *tex, const unsigned char *pixels, int width, int height,
+	int logical_w, int logical_h)
+{
+	void *copy = malloc((size_t)width * height * 4);
+	if (copy == NULL || logical_w <= 0 || logical_h <= 0) {
+		free(copy);
+		return;
+	}
+	memcpy(copy, pixels, (size_t)width * height * 4);
+	free(tex->hd_data);
+	tex->hd_data = copy;
+	tex->hd_w = width;
+	tex->hd_h = height;
+	tex->density_x = (float)width / (float)logical_w;
+	tex->density_y = (float)height / (float)logical_h;
+	tex->dirty = 1;
+}
+
 static SDL_Texture *texture_for(C3D_Tex *tex, int output)
 {
 	TexHandle *handle = tex->handle;
 	if (handle == NULL) return NULL;
+	const void *pixels = tex->hd_data != NULL ? tex->hd_data : tex->data;
+	int w = tex->hd_data != NULL ? tex->hd_w : tex->width, h = tex->hd_data != NULL ? tex->hd_h : tex->height;
 	if (tex->dirty) {
 		for (int i = 0; i < 2; ++i) {
-			if (handle->texture[i] != NULL) {
-				SDL_UpdateTexture(handle->texture[i], NULL, tex->data, tex->width * 4);
+			if (handle->texture[i] != NULL) {   /* size may have changed (HD upload): recreate */
+				SDL_DestroyTexture(handle->texture[i]);
+				handle->texture[i] = NULL;
 			}
 		}
 		tex->dirty = 0;
@@ -255,10 +277,10 @@ static SDL_Texture *texture_for(C3D_Tex *tex, int output)
 	if (handle->texture[output] == NULL) {
 		SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, tex->linear_filter ? "1" : "0");
 		SDL_Texture *texture = SDL_CreateTexture(outputs[output].renderer, SDL_PIXELFORMAT_RGBA32,
-			SDL_TEXTUREACCESS_STATIC, tex->width, tex->height);
+			SDL_TEXTUREACCESS_STATIC, w, h);
 		if (texture == NULL) return NULL;
 		SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-		SDL_UpdateTexture(texture, NULL, tex->data, tex->width * 4);
+		SDL_UpdateTexture(texture, NULL, pixels, w * 4);
 		handle->texture[output] = texture;
 	}
 	return handle->texture[output];
@@ -632,8 +654,10 @@ static void replay(C3D_RenderTarget *t)
 			SDL_Texture *texture = texture_for(cmd->tex, t->output);
 			if (texture == NULL) continue;
 			SDL_SetTextureAlphaMod(texture, (Uint8)(fminf(fmaxf(cmd->alpha, 0.0f), 1.0f) * 255.0f));
-			SDL_Rect src = {(int)lroundf(cmd->src_x), (int)lroundf(cmd->src_y),
-				(int)lroundf(cmd->src_w), (int)lroundf(cmd->src_h)};
+			float dx = cmd->tex->hd_data != NULL ? cmd->tex->density_x : 1.0f;
+			float dy = cmd->tex->hd_data != NULL ? cmd->tex->density_y : 1.0f;
+			SDL_Rect src = {(int)lroundf(cmd->src_x * dx), (int)lroundf(cmd->src_y * dy),
+				(int)lroundf(cmd->src_w * dx), (int)lroundf(cmd->src_h * dy)};
 			SDL_FRect dst = {cmd->x * s, cmd->y * s, cmd->w * s, cmd->h * s};
 			SDL_RenderCopyF(r, texture, &src, &dst);
 		} else if (cmd->type == CMD_TEXT) {

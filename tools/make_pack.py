@@ -24,6 +24,8 @@ parser.add_argument("--voice-quality", type=float, default=2.0, help="Vorbis qua
 parser.add_argument("--music-quality", type=float, default=4.0, help="Vorbis quality for other audio (default 4)")
 parser.add_argument("--cache", default=None)
 parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
+parser.add_argument("--exclude", action="append", default=[], metavar="FOLDER",
+                    help="leave out a top-level folder, e.g. --exclude hd for a 3DS archive")
 args = parser.parse_args()
 
 game = os.path.abspath(args.game)
@@ -38,6 +40,8 @@ for folder, dirs, names in os.walk(game, followlinks=True):
         path = os.path.join(folder, name)
         rel = os.path.relpath(path, game).replace(os.sep, "/")
         if rel.startswith("shots/") or name.endswith((".log", ".tmp")):
+            continue
+        if any(rel == folder or rel.startswith(folder.strip("/") + "/") for folder in args.exclude):
             continue
         files.append((rel, path))
 
@@ -56,7 +60,7 @@ def convert(job):
 
 
 if args.ogg:
-    wavs = [(rel, path) for rel, path in files if rel.startswith("audio/") and rel.endswith(".wav")]
+    wavs = [(rel, path) for rel, path in files if rel.startswith(("audio/", "hd/audio/")) and rel.endswith(".wav")]
     converted = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for done, (rel, target) in enumerate(pool.map(convert, wavs), 1):

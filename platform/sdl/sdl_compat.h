@@ -64,12 +64,19 @@ typedef struct {
 	void *handle;         /* platform texture(s); created lazily from data */
 	int dirty;            /* data changed since the platform texture was made */
 	int linear_filter;
+	void *hd_data;        /* optional higher-resolution pixels drawn in place of data */
+	int hd_w, hd_h;
+	float density_x, density_y;   /* hd pixels per texture pixel */
 } C3D_Tex;
 bool C3D_TexInit(C3D_Tex *tex, u16 width, u16 height, GPU_TEXCOLOR format);
 void C3D_TexDelete(C3D_Tex *tex);
 void C3D_TexSetFilter(C3D_Tex *tex, GPU_TEXTURE_FILTER_PARAM mag, GPU_TEXTURE_FILTER_PARAM min);
 /* SDL builds only: copy RGBA pixels (width x height, rows top to bottom) into the texture. */
 void C3D_TexUploadRGBA(C3D_Tex *tex, const unsigned char *pixels, int width, int height);
+/* SDL builds only: an HD image (width x height RGBA) that covers the same area as an image of
+   `logical_w` x `logical_h` uploaded the normal way; it is drawn at that size, just sharper. */
+void C3D_TexUploadHD(C3D_Tex *tex, const unsigned char *pixels, int width, int height,
+	int logical_w, int logical_h);
 
 typedef struct {
 	u16 width, height;
