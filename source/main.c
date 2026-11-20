@@ -4023,7 +4023,14 @@ int main(void)
 					handle_play_input(down, hidKeysHeld(), dt);
 				}
 			}
+			/* A line just finished (A pressed): fetch the next one now, so this frame is not
+			   drawn without a text box (on Wii U the next frame can take a while, loading the
+			   next voice and faces, which made the box flash off between lines). */
+			if (mode == MODE_PLAY && panel == PANEL_NONE && waiting == PLAY_NONE) {
+				advance();
+			}
 		}
+
 
 		if (strcmp(notice, last_notice) != 0) {
 			snprintf(last_notice, sizeof(last_notice), "%s", notice);
