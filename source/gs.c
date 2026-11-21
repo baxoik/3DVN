@@ -1684,6 +1684,42 @@ int gs_choose(const GsProgram *program, GsState *state, int index)
 	return 1;
 }
 
+/* Letters and digits only, lower case; skips {variables}, [i]/[/i] and marker bytes, so
+   a line compares equal before and after interpolation and markup changes. */
+static void say_key(const char *text, char *out, size_t size)
+{
+	size_t used = 0;
+	for (const char *p = text; *p && used + 1 < size; ++p) {
+		if (*p == '{') {
+			const char *end = strchr(p, '}');
+			if (end != NULL) { p = end; continue; }
+		}
+		if (!strncmp(p, "[i]", 3)) { p += 2; continue; }
+		if (!strncmp(p, "[/i]", 4)) { p += 3; continue; }
+		unsigned char c = (unsigned char)*p;
+		if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')) out[used++] = (char)c;
+		else if (c >= 'A' && c <= 'Z') out[used++] = (char)(c - 'A' + 'a');
+		else if (c >= 0x80) out[used++] = (char)c;   /* keep non-ASCII text as is */
+	}
+	out[used] = '\0';
+}
+
+int gs_find_say(const GsProgram *program, const char *text, int near_pc)
+{
+	char want[GS_TEXT_LEN], have[GS_TEXT_LEN];
+	say_key(text, want, sizeof(want));
+	if (want[0] == '\0') return -1;
+	int best = -1;
+	for (int index = 0; index < program->code_count; ++index) {
+		const Instr *instr = &program->code[index];
+		if (instr->op != OP_SAY || instr->b == NULL) continue;
+		say_key(instr->b, have, sizeof(have));
+		if (strcmp(have, want) != 0) continue;
+		if (best < 0 || abs(index - near_pc) < abs(best - near_pc)) best = index;
+	}
+	return best;
+}
+
 int gs_state_valid(const GsProgram *program, const GsState *state)
 {
 	if (state->pc < 0 || state->pc > program->code_count

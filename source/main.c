@@ -1419,6 +1419,39 @@ static int normalize_save(SaveData *data)
 	return 1;
 }
 
+/* A save from another version of the game: its position is an instruction index into the
+   old script. Continue right after the same line of dialogue in the current script (the
+   line on screen, or the last one before a choice menu), keeping variables and scene.
+   Returns NULL on success, else why not. */
+static const char *relocate_save(SaveData *data)
+{
+	if (data->state.call_depth != 0) {
+		return "saved inside a subroutine; can't continue it in this version";
+	}
+	if (data->event.type != GS_EV_SAY) {
+		const Backlog *log = &data->backlog;
+		if (log->count <= 0 || log->count > BACKLOG_MAX || log->start < 0 || log->start >= BACKLOG_MAX) {
+			return "save is from a different script version";
+		}
+		const BacklogEntry *last = &log->entries[(log->start + log->count - 1) % BACKLOG_MAX];
+		GsEvent say;
+		memset(&say, 0, sizeof(say));
+		say.type = GS_EV_SAY;
+		snprintf(say.speaker, sizeof(say.speaker), "%s", last->speaker);
+		snprintf(say.text, sizeof(say.text), "%s", last->text);
+		say.color = last->color;
+		data->event = say;   /* resume at that line; the menu follows again */
+	}
+	int at = gs_find_say(program, data->event.text, data->state.pc - 1);
+	if (at < 0) {
+		return "this line is not in the updated game";
+	}
+	data->state.pc = at + 1;
+	data->state.pending_menu = -1;
+	data->state.pending_count = 0;
+	return NULL;
+}
+
 static int load_slot(int slot)
 {
 	char path[200];
@@ -1459,7 +1492,7 @@ static int load_slot(int slot)
 	char previous_script[sizeof(current_script)];
 	int switched = 0;
 	snprintf(previous_script, sizeof(previous_script), "%s", current_script);
-	if (read_ok && data->header.magic == SAVE_MAGIC && data->header.script_hash == script_hash
+	if (read_ok && data->header.magic == SAVE_MAGIC
 		&& !extras_mode && data->state.var_count >= 0 && data->state.var_count <= GS_MAX_VARS) {
 		const char *wanted = gs_variable_text(&data->state, "_script");
 		wanted = wanted != NULL && wanted[0] ? wanted : "";
@@ -1475,8 +1508,10 @@ static int load_slot(int slot)
 		problem = file == NULL ? "slot is empty" : "cannot read save";
 	} else if (data->header.magic != SAVE_MAGIC) {
 		problem = "unsupported save file";
-	} else if (data->header.script_hash != script_hash) {
-		problem = "save is from a different script version";
+	} else if (data->header.script_hash != script_hash && (problem = relocate_save(data)) != NULL) {
+		/* problem set */
+	} else if (data->header.script_hash != script_hash && (nvl_page_clear(&loaded_page), has_page = 0)) {
+		/* relocated: the saved NVL page belongs to the old position, start a fresh one */
 	} else if (!gs_state_valid(program, &data->state) || !normalize_save(data)) {
 		problem = "save file is damaged";
 	}

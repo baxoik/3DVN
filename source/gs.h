@@ -98,6 +98,11 @@ int gs_choose(const GsProgram *program, GsState *state, int index);
 /* Checks a state loaded from untrusted data (e.g. a save file) against a program. */
 int gs_state_valid(const GsProgram *program, const GsState *state);
 
+/* Index of the dialogue instruction whose text matches `text` (ignoring punctuation,
+   case, {variables} and [i] markup), the one nearest `near_pc` if it occurs more than
+   once; -1 if none. Used to continue a save in a changed version of a script. */
+int gs_find_say(const GsProgram *program, const char *text, int near_pc);
+
 /* Advances a background fade and returns the elapsed time after it finished. */
 float gs_bg_fade_advance(float *elapsed, float duration, float seconds);
 float gs_bg_fade_alpha(float elapsed, float duration);
