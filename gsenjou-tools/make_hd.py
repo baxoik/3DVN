@@ -219,6 +219,17 @@ def job(item):
         if box is None:
             return kind, "not larger"
         hd = whole.crop(box)
+        if kind == "face" and similarity(hd, small) >= args.min_match:
+            # The converted portraits are zoomed-in crops that cut off hair and chin.
+            # Use the whole original face instead, and replace the small portrait with a
+            # matching version at the same height (the 3DS uses it; HD draws over it).
+            if hd.size != whole.size:
+                height = small.height
+                width = max(1, round(whole.width * height / whole.height))
+                whole.resize((width, height), Image.LANCZOS).save(small_path, "PNG", optimize=True)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            whole.save(target, "PNG", optimize=True)
+            return kind, "ok, whole face"
         if similarity(hd, small) < args.min_match:
             if kind != "bg":
                 return kind, "different"
