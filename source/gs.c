@@ -1019,6 +1019,11 @@ static int compile_line(Compiler *compiler, const char *line)
 			return -1;
 		}
 		program->code[index].a = dup_string(is_word(&tokens[1], "stop") ? "" : tokens[1].text);
+		if (tokens[0].text[0] == 's' && count >= 3 && is_word(&tokens[2], "loop")) {
+			/* sfx NAME loop: repeats until "sfx stop" (loop points from audio/NAME.loop) */
+			program->code[index].c = dup_string("loop");
+			return parse_modifiers(compiler, tokens, count, 3, &program->code[index], 0);
+		}
 		return parse_modifiers(compiler, tokens, count, 2, &program->code[index], 0);
 	}
 
@@ -1546,6 +1551,7 @@ void gs_next(const GsProgram *program, GsState *state, GsEvent *event)
 				copy_text(event->pos, sizeof(event->pos), instr->c);
 			} else {
 				interpolate(state, instr->a, event->asset, sizeof(event->asset));
+				copy_text(event->pos, sizeof(event->pos), instr->op == OP_SFX ? instr->c : NULL);
 			}
 			event->seconds = instr->seconds;
 			return;

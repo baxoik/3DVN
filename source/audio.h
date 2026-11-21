@@ -10,6 +10,9 @@ int audio_available(void);
 int audio_play_music(const char *path, float fade_seconds, char *err, int err_size);
 void audio_stop_music(float fade_seconds);
 int audio_play_sfx(const char *path, char *err, int err_size);
+/* A sound effect that repeats until "sfx stop": plays to loop_end seconds (0 = the end of the
+   file), then continues at loop_start. Running loops keep their slot. */
+int audio_play_sfx_loop(const char *path, int loop, float loop_start, float loop_end, char *err, int err_size);
 void audio_stop_sfx(void);
 /* 1 while any sound effect (including voice clips) is still playing. */
 int audio_sfx_playing(void);

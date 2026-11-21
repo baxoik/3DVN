@@ -955,8 +955,24 @@ static void play_audio_event(const GsEvent *e, int is_music)
 #ifdef VN_SDL
 	u32 started = now_ms();
 #endif
-	int ok = is_music ? audio_play_music(path, e->seconds, err, sizeof(err))
-		: audio_play_sfx(path, err, sizeof(err));
+	int ok;
+	if (!is_music && !strcmp(e->pos, "loop")) {
+		/* optional loop points: audio/NAME.loop holds "start end" in seconds (end 0 = end of
+		   file); without it the whole sound repeats */
+		float loop_start = 0.0f, loop_end = 0.0f;
+		char loop_path[420];
+		size_t loop_size;
+		snprintf(loop_path, sizeof(loop_path), "%s/audio/%s.loop", game_dir, e->asset);
+		char *loop_text = (char *)read_file(loop_path, &loop_size);
+		if (loop_text != NULL) {
+			if (sscanf(loop_text, "%f %f", &loop_start, &loop_end) < 1) loop_start = loop_end = 0.0f;
+			free(loop_text);
+		}
+		ok = audio_play_sfx_loop(path, 1, loop_start, loop_end, err, sizeof(err));
+	} else {
+		ok = is_music ? audio_play_music(path, e->seconds, err, sizeof(err))
+			: audio_play_sfx(path, err, sizeof(err));
+	}
 #ifdef VN_SDL
 	u32 took = now_ms() - started;
 	if (took > 30) vn_log("audio %u ms: %s", (unsigned)took, e->asset);

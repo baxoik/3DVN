@@ -360,7 +360,15 @@ blocks. Words are separated by spaces; text containing spaces goes in
     music NAME [fade SECONDS]      Loop audio/NAME.wav as background music.
     music stop [fade SECONDS]
     sfx NAME                       Play audio/NAME.wav once.
-    sfx stop                       Silences all playing sound effects (music keeps playing).
+    sfx NAME loop                  Repeat it until "sfx stop" (ambience, alarms). With a
+                                   text file audio/NAME.loop holding "START END" in
+                                   seconds, it plays to END and then repeats from START
+                                   (an intro followed by a loop); END 0 = end of file.
+                                   A running loop keeps playing while voices and other
+                                   sounds come and go, and does not count as a voice
+                                   still playing for auto mode.
+    sfx stop                       Silences all playing sound effects, loops included
+                                   (music keeps playing).
 
 6.10b Video command
     video NAME [noskip]            Play video/NAME.3vv full screen on the top

@@ -46,6 +46,13 @@ typedef struct {
 	int channels, finished;
 	int voice;                     /* from audio/v/: follows the voice volume */
 	unsigned char *ogg_data;       /* Ogg file decoded from memory */
+	/* Looping: plays to loop_end (0 = end of file), then continues at loop_start (frames).
+	   Ogg loops seek the decoder; WAV loops stream from the decoded pcm. */
+	int loop;
+	long loop_start, loop_end, position;
+	u8 *pcm;                       /* decoded WAV (linear memory) for a looping WAV */
+	long pcm_frames;
+	int frame_bytes;
 } Sfx;
 
 static int ready;
@@ -149,6 +156,9 @@ static void sfx_release(Sfx *slot)
 		stb_vorbis_close(slot->vorbis);
 	}
 	free(slot->ogg_data);
+	if (slot->pcm != NULL) {
+		linearFree(slot->pcm);
+	}
 	if (slot->memory != NULL) {
 		linearFree(slot->memory);
 	}
@@ -175,7 +185,7 @@ int audio_sfx_playing(void)
 	for (int index = 0; index < SFX_SLOTS; ++index) {
 		/* The buffer is QUEUED as soon as it is added, before the DSP reports the channel as playing. */
 		const Sfx *slot = &sfx[index];
-		if (slot->memory == NULL) continue;
+		if (slot->memory == NULL || slot->loop) continue;   /* loops (ambience) never "end" */
 		if (slot->vorbis != NULL) {
 			if (!slot->finished) return 1;
 			for (int b = 0; b < SFX_STREAM_BUFFERS; ++b) {
@@ -401,6 +411,42 @@ void audio_stop_music(float fade_seconds)
 }
 
 /* Refills an Ogg sound effect's finished buffers; marks it finished at the end of the file. */
+/* Fills `target` with up to `max_frames` frames of a streamed sound, wrapping at the loop end. */
+static int sfx_frames(Sfx *slot, u8 *target, int max_frames)
+{
+	int filled = 0, restarts = 0;
+	while (filled < max_frames) {
+		int want = max_frames - filled;
+		long end = slot->loop && slot->loop_end > slot->loop_start ? slot->loop_end
+			: slot->pcm != NULL ? slot->pcm_frames : -1;
+		if (end >= 0 && slot->position >= end) want = 0;
+		else if (end >= 0 && want > end - slot->position) want = (int)(end - slot->position);
+		int got = 0;
+		if (want > 0 && slot->pcm != NULL) {
+			memcpy(target + (size_t)filled * slot->frame_bytes, slot->pcm + (size_t)slot->position * slot->frame_bytes,
+				(size_t)want * slot->frame_bytes);
+			got = want;
+		} else if (want > 0) {
+			got = stb_vorbis_get_samples_short_interleaved(slot->vorbis, slot->channels,
+				(short *)(target + (size_t)filled * slot->frame_bytes), want * slot->channels);
+		}
+		if (got > 0) {
+			filled += got;
+			slot->position += got;
+			restarts = 0;
+			continue;
+		}
+		if (!slot->loop || ++restarts > 2) break;   /* end of a one-shot sound (or nothing to loop) */
+		long start = slot->loop_end > slot->loop_start ? slot->loop_start : 0;
+		if (slot->vorbis != NULL && !stb_vorbis_seek(slot->vorbis, (unsigned)start)) {
+			stb_vorbis_seek_start(slot->vorbis);
+			start = 0;
+		}
+		slot->position = start;
+	}
+	return filled;
+}
+
 static void feed_sfx(Sfx *slot, int channel)
 {
 	for (int index = 0; index < SFX_STREAM_BUFFERS && !slot->finished; ++index) {
@@ -409,8 +455,7 @@ static void feed_sfx(Sfx *slot, int channel)
 			continue;
 		}
 		short *target = (short *)((u8 *)slot->memory + (size_t)index * SFX_STREAM_BYTES);
-		int frames = stb_vorbis_get_samples_short_interleaved(slot->vorbis, slot->channels, target,
-			SFX_STREAM_BYTES / 2);
+		int frames = sfx_frames(slot, (u8 *)target, SFX_STREAM_BYTES / slot->frame_bytes);
 		if (frames <= 0) {
 			slot->finished = 1;
 			break;
@@ -418,12 +463,33 @@ static void feed_sfx(Sfx *slot, int channel)
 		memset(buffer, 0, sizeof(*buffer));
 		buffer->data_vaddr = target;
 		buffer->nsamples = (u32)frames;
-		DSP_FlushDataCache(target, (u32)frames * 2u * (u32)slot->channels);
+		DSP_FlushDataCache(target, (u32)frames * (u32)slot->frame_bytes);
 		ndspChnWaveBufAdd(channel, buffer);
 	}
 }
 
+/* The next sound-effect slot, skipping slots held by a running loop (ambience keeps
+   playing while voices and other sounds come and go), unless every slot loops. */
+static int take_sfx_slot(void)
+{
+	for (int i = 0; i < SFX_SLOTS; ++i) {
+		int index = (next_sfx + i) % SFX_SLOTS;
+		if (!(sfx[index].loop && sfx[index].memory != NULL)) {
+			next_sfx = (index + 1) % SFX_SLOTS;
+			return index;
+		}
+	}
+	int index = next_sfx;
+	next_sfx = (next_sfx + 1) % SFX_SLOTS;
+	return index;
+}
+
 int audio_play_sfx(const char *path, char *err, int err_size)
+{
+	return audio_play_sfx_loop(path, 0, 0.0f, 0.0f, err, err_size);
+}
+
+int audio_play_sfx_loop(const char *path, int loop, float loop_start, float loop_end, char *err, int err_size)
 {
 	if (!ready) {
 		say(err, err_size, "no audio (dspfirm.cdc missing?)");
@@ -473,15 +539,19 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 			say(err, err_size, "out of audio memory");
 			return 0;
 		}
-		int channel = SFX_FIRST + next_sfx;
-		Sfx *slot = &sfx[next_sfx];
-		next_sfx = (next_sfx + 1) % SFX_SLOTS;
+		int taken = take_sfx_slot();
+		int channel = SFX_FIRST + taken;
+		Sfx *slot = &sfx[taken];
 		ndspChnReset(channel);
 		sfx_release(slot);
 		slot->memory = buffers;
 		slot->vorbis = vorbis;
 		slot->ogg_data = whole;   /* decoded from memory: keep it until the sound is released */
 		slot->channels = info.channels;
+		slot->frame_bytes = info.frame_size;
+		slot->loop = loop;
+		slot->loop_start = (long)(loop_start * (float)info.rate);
+		slot->loop_end = (long)(loop_end * (float)info.rate);
 		slot->voice = is_voice_path(path);
 		ndspChnSetInterp(channel, NDSP_INTERP_LINEAR);
 		ndspChnSetRate(channel, (float)info.rate);
@@ -542,11 +612,36 @@ int audio_play_sfx(const char *path, char *err, int err_size)
 		pcm16_to_native(memory, got);
 	}
 
-	int channel = SFX_FIRST + next_sfx;
-	Sfx *slot = &sfx[next_sfx];
-	next_sfx = (next_sfx + 1) % SFX_SLOTS;
+	int taken = take_sfx_slot();
+	int channel = SFX_FIRST + taken;
+	Sfx *slot = &sfx[taken];
 	ndspChnReset(channel);
 	sfx_release(slot);
+	if (loop) {
+		/* a looping WAV streams from its decoded data, wrapping at the loop end */
+		void *buffers = linearAlloc((size_t)SFX_STREAM_BUFFERS * SFX_STREAM_BYTES);
+		if (buffers == NULL) {
+			linearFree(memory);
+			say(err, err_size, "out of audio memory");
+			return 0;
+		}
+		slot->memory = buffers;
+		slot->pcm = memory;
+		slot->pcm_frames = info.data_size / info.frame_size;
+		slot->frame_bytes = info.frame_size;
+		slot->channels = info.channels;
+		slot->loop = 1;
+		slot->loop_start = (long)(loop_start * (float)info.rate);
+		slot->loop_end = (long)(loop_end * (float)info.rate);
+		if (slot->loop_end > slot->pcm_frames) slot->loop_end = slot->pcm_frames;
+		slot->voice = is_voice_path(path);
+		ndspChnSetInterp(channel, NDSP_INTERP_LINEAR);
+		ndspChnSetRate(channel, (float)info.rate);
+		ndspChnSetFormat(channel, ndsp_format(&info));
+		set_volume(channel, sfx_level(slot->voice));
+		feed_sfx(slot, channel);
+		return 1;
+	}
 	slot->memory = memory;
 	slot->buffer.data_vaddr = memory;
 	slot->buffer.nsamples = (u32)(info.data_size / info.frame_size);
@@ -566,7 +661,7 @@ void audio_update(float dt)
 		return;
 	}
 	for (int index = 0; index < SFX_SLOTS; ++index) {
-		if (sfx[index].vorbis != NULL && !sfx[index].finished) {
+		if ((sfx[index].vorbis != NULL || sfx[index].pcm != NULL) && !sfx[index].finished) {
 			feed_sfx(&sfx[index], SFX_FIRST + index);
 		}
 	}

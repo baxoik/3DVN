@@ -738,11 +738,19 @@ class Converter:
             out(f"music stop{fade_of(args)}")
         elif command in ("se", "fise") and "storage" in args:
             sound = self.assets.sound(args["storage"])
+            loops = state.setdefault("se_loops", {})
+            buffer = str(args.get("buf", "0"))
+            if loops.get(buffer):
+                out("sfx stop")   # a new sound on the same buffer replaces the running loop
+                loops[buffer] = None
             if sound:
                 state["last_se"] = args["storage"]
-                out(f"sfx {sound}")
-        elif command == "sse":
+                looping = str(args.get("loop", "")).lower() == "true"
+                out(f"sfx {sound} loop" if looping else f"sfx {sound}")
+                loops[buffer] = sound if looping else None
+        elif command in ("sse", "fose"):
             out("sfx stop")
+            state.setdefault("se_loops", {})[str(args.get("buf", "0"))] = None
         elif command == "wse":
             length = self.assets.duration(state["last_se"]) if state.get("last_se") else 0.0
             if length > 0:

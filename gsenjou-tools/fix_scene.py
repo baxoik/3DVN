@@ -30,6 +30,13 @@ for old, new in (
     ('        elif command in ("waitclick", "show", "avg", "novel", "wjump"):\n            pass\n',
      '        elif command in ("avg", "avg_with_name", "novel"):\n            out("# mode " + command)\n'
      '        elif command in ("waitclick", "show", "wjump"):\n            pass\n'),
+    # sound effects as markers (the stand-in assets have no sounds): loops and their stops
+    ('        elif command in ("se", "fise") and "storage" in args:\n',
+     '        elif command in ("se", "fise") and "storage" in args:\n'
+     '            out("# se " + args["storage"] + (" loop " if str(args.get("loop", "")).lower() == "true"'
+     ' else " once ") + str(args.get("buf", "0")))\n'),
+    ('        elif command in ("sse", "fose"):\n',
+     '        elif command in ("sse", "fose"):\n            out("# sestop " + str(args.get("buf", "0")))\n'),
 ):
     assert source.count(old) == 1, old
     source = source.replace(old, new)
@@ -85,9 +92,20 @@ for stem in chapters:
         lines = h.read().split("\n")
 
     # wanted face for each say line of the original, simulating faceRecord
-    gen_say, gen_face = [], []
+    gen_say, gen_face, gen_events = [], [], []
     rec, adv = {}, True
+    pending, running = [], {}   # looping sound effects per buffer, as in KAG
     for line in generated.get(stem, []):
+        if line.startswith("# se ") or line.startswith("# sestop"):
+            parts = line.split()
+            buffer = parts[-1]
+            if running.get(buffer):
+                pending.append(("stop", None))
+                running[buffer] = None
+            if parts[1] == "se" and parts[3] == "loop":
+                pending.append(("loop", parts[2].lower()))
+                running[buffer] = parts[2].lower()
+            continue
         m = SHOW_FACE.match(line)
         s = SHOW_SLOT.match(line)
         if m:
@@ -102,16 +120,20 @@ for stem in chapters:
             want = rec.get(id2head.get(speaker(line))) if adv else None
             gen_say.append(line)
             gen_face.append(want if want in faces_available else None)
+            gen_events.append(pending)
+            pending = []
 
     say_idx = [i for i, line in enumerate(lines) if SAY.match(line)]
     old_say = [lines[i] for i in say_idx]
     wanted = [None] * len(old_say)
     known = [False] * len(old_say)
+    events = [[] for _ in old_say]   # loop starts / stops before each line
     sm = difflib.SequenceMatcher(None, [norm(x) for x in gen_say], [norm(x) for x in old_say], autojunk=False)
     for tag, a1, a2, b1, b2 in sm.get_opcodes():
         if tag == "equal":
             for k in range(a2 - a1):
                 wanted[b1 + k], known[b1 + k] = gen_face[a1 + k], True
+                events[b1 + k] = gen_events[a1 + k]
             continue
         taken = set()
         for a in range(a1, a2):
@@ -123,6 +145,7 @@ for stem in chapters:
                         best, score = b, sc
             if best is not None and score >= FUZZY:
                 wanted[best], known[best] = gen_face[a], True
+                events[best] = gen_events[a]
                 taken.add(best)
     for k in range(len(old_say)):  # unmatched: keep the previous line's face if the same person goes on
         if not known[k] and k and speaker(old_say[k]) and speaker(old_say[k]) == speaker(old_say[k - 1]):
@@ -131,6 +154,8 @@ for stem in chapters:
     stats["lines matched"] += sum(known)
 
     out, visible, say_no = [], "?", 0
+    stats.setdefault("sound loops", 0)
+    stats.setdefault("loop stops", 0)
 
     def hide_sprites():
         recent = out[-8:]
@@ -154,6 +179,23 @@ for stem in chapters:
                 visible = None
             hide_sprites()
         if SAY.match(line):
+            gap = len(out)   # start of the commands since the previous line
+            while gap and not SAY.match(out[gap - 1]) and not out[gap - 1].startswith("include"):
+                gap -= 1
+            for kind, name in events[say_no]:
+                if kind == "stop":
+                    out.insert(gap, "sfx stop")
+                    stats["loop stops"] += 1
+                    continue
+                plain = [j for j in range(gap, len(out)) if out[j].strip() == f"sfx {name}"]
+                if plain:
+                    out[plain[-1]] = out[plain[-1]].rstrip() + " loop"
+                else:
+                    at = len(out)
+                    while at > gap and out[at - 1].startswith("sfx v/"):
+                        at -= 1
+                    out.insert(at, f"sfx {name} loop")
+                stats["sound loops"] += 1
             want = wanted[say_no]
             say_no += 1
             if want != visible:
