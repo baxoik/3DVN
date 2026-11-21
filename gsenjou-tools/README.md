@@ -8,7 +8,9 @@ chapter select, getting the result onto a 3DS, and testing it in an emulator.
 from your own copy of the game. Keep those files, and anything built from them,
 out of git (see `.gitignore`).
 
-## Engine changes on this branch
+## Engine features this game uses
+
+(All in 3DVN `main`; the repository README lists everything the fork adds.)
 
 - **Auto mode:** Y, or the "Auto (Y)" touch button, toggles it. Voiced lines
   advance 0.5 s after the voice ends. Unvoiced lines wait 1 s plus 0.04 s per
@@ -34,8 +36,9 @@ out of git (see `.gitignore`).
 
 ## Build the voiced game
 
-1. Convert the voice clips to WAV (16 kHz mono). A sound effect can be at most
-   2 MB, so re-encode any longer clip at 11025 Hz:
+1. Convert the voice clips to WAV (16 kHz mono; these are the 3DS-sized voices, the PC
+   and Wii U archive uses your original clips instead). A sound effect can be at most
+   4 MB once decoded, so re-encode any clip over 2 MB at 11025 Hz:
 
    ```sh
    mkdir -p voice-wav
@@ -49,7 +52,7 @@ out of git (see `.gitignore`).
 
    ```sh
    GAME=path/to/g-senjou-no-maou KS=path/to/ks VOICES=voice-wav HEADS=heads.txt \
-     gsenjou-tools/build_voiced.sh
+     VOICE_OVERRIDES=path/to/voice_overrides.tsv gsenjou-tools/build_voiced.sh
    ```
 
    This runs, in order:
@@ -64,10 +67,16 @@ out of git (see `.gitignore`).
      only remember a face; each line shows its speaker's remembered face (ADV
      mode only); `@clear_mface` forgets them all. Every background change and
      chapter start also hides all five sprite slots.
-   - `fix_leaked_commands.py` repairs KiriKiri commands that older imports left
-     in as dialogue: with adult scenes off, each H-scene showed "@return" and
-     friends as text and then played anyway. `@return` becomes `return` again,
-     `@fobgm` a music fade, and gallery jumps and comments are dropped.
+   - `fix_leaked_commands.py` repairs what the import got wrong:
+     - KiriKiri commands left in as dialogue: with adult scenes off, each H-scene
+       showed "@return" and friends as text and then played anyway. `@return`
+       becomes `return` again, `@fobgm` a music fade; gallery jumps and comments
+       are dropped.
+     - `[ font italic="true" ]...[ resetfont ]` become `[i]...[/i]` (italics on PC
+       and Wii U, upright on 3DS).
+     - Character spacing: the original stands characters at 10/25/50/75/90% of the
+       screen width; the import used narrower positions, so the side slots are
+       moved out (2,387 placements).
    - `chapter_select.py` adds a nested chapter-select menu after the
      adult-scenes question. Each entry sets the story flags you'd have earned
      before that chapter, so jumping ahead doesn't trigger flag-gated bad endings.
@@ -109,24 +118,27 @@ Backgrounds that were redrawn for widescreen (objects moved or added) use the cl
 4:3 area of the new drawing, so they are framed slightly differently. Then pack two archives: with `hd/` for PC / Wii U, and
 `--exclude hd` for the 3DS.
 
-## Pack it (optional, recommended)
+## Make the archives (recommended)
+
+After building the voiced game, one script does the rest in the right order:
 
 ```sh
-python3 tools/make_pack.py voiced/g-senjou-no-maou g-senjou-no-maou.3vp --ogg
+DECODED=decoded ORIGINALS=path/to/extracted gsenjou-tools/make_archives.sh
 ```
 
-One 352 MB file (Ogg audio) instead of 2.2 GB in about 16,000 files.
+1. `make_hd.py` (HD images and whole face portraits). It also replaces the small
+   portraits, which the 3DS uses, so it runs before packing either archive.
+   `make_loops.py` turns the loop points of looping sound effects (`sound/*.ogg.sli`)
+   into `audio/<name>.loop` files (rain, phone and other ambience: an intro, then the
+   loop section repeats until the script stops it).
+2. `packs/g-senjou-no-maou-3ds.3vp` (about 370 MB): no `hd/`, audio converted to Ogg.
+3. `packs/g-senjou-no-maou.3vp` (about 1.2 GB): `hd/` plus the original audio from your
+   copy unchanged (48 kHz voices, 44.1 kHz stereo music) for PC and Wii U.
 
-For PC and Wii U, use the original audio from your copy unchanged (48 kHz voices,
-44.1 kHz stereo music) instead of the 3DS-sized conversions:
-
-```sh
-python3 tools/make_pack.py voiced/g-senjou-no-maou g-senjou-no-maou.3vp --ogg \
-  --audio-originals path/to/voice --audio-originals path/to/bgm --audio-originals path/to/sound
-```
-
-(795 MB; the 3DS archive keeps the smaller converted audio, which is easier to decode.) Put it in
-`<3dvn root>/games/` instead of the folder. It works on 3DS, Wii U and PC.
+`ORIGINALS` is the folder holding your copy's `voice/`, `bgm/` and `sound/` folders,
+`DECODED` the output of `tools/decode_tlg.py` (above). Copy an archive to
+`<3dvn root>/games/g-senjou-no-maou.3vp` (renaming the 3DS one). Rebuilding the voiced
+game resets the portraits, so run `make_archives.sh` again after `build_voiced.sh`.
 
 ## Get it onto the 3DS
 

@@ -28,7 +28,7 @@ parser.add_argument("--audio-originals", action="append", default=[], metavar="D
                     help="folder(s) of original .ogg files (searched recursively): a sound with an "
                          "original of the same name uses it unchanged instead of being converted")
 parser.add_argument("--exclude", action="append", default=[], metavar="FOLDER",
-                    help="leave out a top-level folder, e.g. --exclude hd for a 3DS archive")
+                    help="leave out a top-level folder or file, e.g. --exclude hd for a 3DS archive")
 args = parser.parse_args()
 
 game = os.path.abspath(args.game)

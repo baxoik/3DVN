@@ -12,7 +12,8 @@ ROOT=$(dirname "$HERE")
 : "${GAME:?set GAME}" "${KS:?set KS}" "${VOICES:?set VOICES}" "${HEADS:?set HEADS}"
 OUT=${OUT:-voiced/g-senjou-no-maou}
 CHECK="$HERE/check_scripts"
-[ -x "$CHECK" ] || cc -O1 -o "$CHECK" "$ROOT/tests/check_scripts.c" "$ROOT/source/gs.c"
+# rebuild the checker when the script language (gs.c) changed since it was built
+[ "$CHECK" -nt "$ROOT/source/gs.c" ] || cc -O1 -o "$CHECK" "$ROOT/tests/check_scripts.c" "$ROOT/source/gs.c"
 rm -rf "$OUT" && mkdir -p "$(dirname "$OUT")"
 python3 -I "$HERE/add_voices.py" "$ROOT/tools/import_gsenjou.py" "$KS" "$GAME" "$VOICES" "$OUT"
 python3 -I "$HERE/fix_scene.py" "$ROOT/tools/import_gsenjou.py" "$KS" "$HEADS" "$OUT"
