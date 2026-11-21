@@ -29,6 +29,11 @@ typedef int32_t Result;
 /* ---------- system ---------- */
 bool aptMainLoop(void);
 
+/* Italic markers inside drawn text (the engine turns [i] / [/i] into these): */
+#define VN_ITALIC_ON '\x0e'
+#define VN_ITALIC_OFF '\x0f'
+#define VN_HAS_ITALICS 1
+
 #ifdef __WIIU__
 /* Where the app can exit to on Wii U. vn_wiiu_exit_to_hbl returns 1 when the Homebrew
    Launcher is being launched (keep running until the system closes the app; classic HBL

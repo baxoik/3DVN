@@ -450,8 +450,11 @@ static float measure_line(C2D_Font font, const char *line, size_t length, float 
 	if (length == 0) return 0.0f;
 	char stack[1024];
 	char *copy = length < sizeof(stack) ? stack : malloc(length + 1);
-	memcpy(copy, line, length);
-	copy[length] = '\0';
+	size_t kept = 0;
+	for (size_t i = 0; i < length; ++i) {   /* italic markers take no space */
+		if (line[i] != VN_ITALIC_ON && line[i] != VN_ITALIC_OFF) copy[kept++] = line[i];
+	}
+	copy[kept] = '\0';
 	int width = 0, height = 0;
 	TTF_Font *ttf = font_at(font, (int)lroundf(FONT_UNITS * scale * 4.0f));
 	if (ttf != NULL) TTF_SizeUTF8(ttf, copy, &width, &height);
@@ -594,6 +597,125 @@ typedef struct {
 static TextCache text_cache[TEXT_CACHE];
 static unsigned text_clock;
 
+/* Width of text[0..length) with italic markers, as rendered. */
+static int styled_width(TTF_Font *ttf, const char *text, size_t length, int italic)
+{
+	int total = 0;
+	char run[1024];
+	size_t used = 0;
+	for (size_t i = 0; i <= length; ++i) {
+		char c = i < length ? text[i] : '\0';
+		if (c == '\0' || c == VN_ITALIC_ON || c == VN_ITALIC_OFF) {
+			if (used) {
+				run[used] = '\0';
+				int w = 0, h = 0;
+				/* upright advance: synthetic italics report extra width for the slant */
+				TTF_SetFontStyle(ttf, TTF_STYLE_NORMAL);
+				TTF_SizeUTF8(ttf, run, &w, &h);
+				total += w;
+				used = 0;
+			}
+			if (c == VN_ITALIC_ON) italic = 1;
+			if (c == VN_ITALIC_OFF) italic = 0;
+		} else if (used < sizeof(run) - 1) {
+			run[used++] = c;
+		}
+	}
+	TTF_SetFontStyle(ttf, TTF_STYLE_NORMAL);
+	return total;
+}
+
+/* Renders text containing italic markers: lines at '\n' (and greedy word wrap at `wrap`
+   pixels when given), each line as runs in normal or italic style. */
+static SDL_Surface *render_styled(TTF_Font *ttf, const char *str, int wrap)
+{
+	enum { MAX_LINES = 64 };
+	const char *starts[MAX_LINES];
+	size_t lengths[MAX_LINES];
+	int italic_at[MAX_LINES], count = 0, italic = 0;
+	const char *p = str;
+	while (*p && count < MAX_LINES) {
+		const char *end = strchr(p, '\n');
+		size_t length = end ? (size_t)(end - p) : strlen(p);
+		/* wrap this paragraph */
+		size_t from = 0;
+		while (count < MAX_LINES) {
+			size_t take = length - from, last_space = 0;
+			if (wrap > 0) {
+				size_t i = from;
+				take = 0;
+				while (i < length) {
+					size_t next = i;
+					while (next < length && p[next] != ' ') ++next;   /* end of word */
+					if (styled_width(ttf, p + from, next - from, italic) > wrap && i > from) break;
+					take = next - from;
+					last_space = next;
+					i = next < length ? next + 1 : next;
+				}
+				if (take == 0) take = length - from;   /* a single overlong word */
+			}
+			starts[count] = p + from;
+			lengths[count] = take;
+			italic_at[count] = italic;
+			for (size_t i = 0; i < take; ++i) {   /* italic state at the end of the line */
+				if (p[from + i] == VN_ITALIC_ON) italic = 1;
+				if (p[from + i] == VN_ITALIC_OFF) italic = 0;
+			}
+			++count;
+			(void)last_space;
+			from += take;
+			while (from < length && p[from] == ' ') ++from;
+			if (from >= length) break;
+		}
+		if (!end) break;
+		p = end + 1;
+	}
+	int skip = TTF_FontLineSkip(ttf), width = 1;
+	int lean = TTF_FontHeight(ttf) / 4;   /* room for slanted glyphs at line ends */
+	for (int l = 0; l < count; ++l) {
+		int w = styled_width(ttf, starts[l], lengths[l], italic_at[l]) + lean;
+		if (w > width) width = w;
+	}
+	SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormat(0, width, skip * (count ? count : 1), 32,
+		SDL_PIXELFORMAT_RGBA32);
+	if (surface == NULL) return NULL;
+	SDL_SetSurfaceBlendMode(surface, SDL_BLENDMODE_NONE);
+	SDL_FillRect(surface, NULL, SDL_MapRGBA(surface->format, 255, 255, 255, 0));
+	SDL_Color white = {255, 255, 255, 255};
+	for (int l = 0; l < count; ++l) {
+		int x = 0, style = italic_at[l];
+		char run[1024];
+		size_t used = 0;
+		for (size_t i = 0; i <= lengths[l]; ++i) {
+			char c = i < lengths[l] ? starts[l][i] : '\0';
+			if (c == '\0' || c == VN_ITALIC_ON || c == VN_ITALIC_OFF) {
+				if (used) {
+					run[used] = '\0';
+					TTF_SetFontStyle(ttf, style ? TTF_STYLE_ITALIC : TTF_STYLE_NORMAL);
+					SDL_Surface *part = TTF_RenderUTF8_Blended(ttf, run, white);
+					if (part != NULL) {
+						SDL_SetSurfaceBlendMode(part, SDL_BLENDMODE_BLEND);
+						SDL_Rect at = {x, l * skip, part->w, part->h};
+						SDL_BlitSurface(part, NULL, surface, &at);
+						int advance = 0, h = 0;
+						TTF_SetFontStyle(ttf, TTF_STYLE_NORMAL);   /* upright advance, see styled_width */
+						TTF_SizeUTF8(ttf, run, &advance, &h);
+						x += advance;
+						SDL_FreeSurface(part);
+					}
+					used = 0;
+				}
+				if (c == VN_ITALIC_ON) style = 1;
+				if (c == VN_ITALIC_OFF) style = 0;
+			} else if (used < sizeof(run) - 1) {
+				run[used++] = c;
+			}
+		}
+	}
+	TTF_SetFontStyle(ttf, TTF_STYLE_NORMAL);
+	return surface;
+}
+
 static TextCache *render_text(int output, C2D_Font font, const char *str, int pixels, int wrap)
 {
 	TextCache *slot = NULL, *oldest = &text_cache[0];
@@ -613,7 +735,9 @@ static TextCache *render_text(int output, C2D_Font font, const char *str, int pi
 	TTF_Font *ttf = font_at(font, pixels);
 	if (ttf == NULL || str[0] == '\0') return NULL;
 	SDL_Color white = {255, 255, 255, 255};
-	SDL_Surface *surface = wrap > 0 ? TTF_RenderUTF8_Blended_Wrapped(ttf, str, white, (Uint32)wrap)
+	SDL_Surface *surface = strchr(str, VN_ITALIC_ON) != NULL || strchr(str, VN_ITALIC_OFF) != NULL
+		? render_styled(ttf, str, wrap)
+		: wrap > 0 ? TTF_RenderUTF8_Blended_Wrapped(ttf, str, white, (Uint32)wrap)
 		: TTF_RenderUTF8_Blended(ttf, str, white);
 	if (surface == NULL) return NULL;
 	slot->texture = SDL_CreateTextureFromSurface(outputs[output].renderer, surface);

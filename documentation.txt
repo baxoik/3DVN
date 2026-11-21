@@ -193,6 +193,7 @@ blocks. Words are separated by spaces; text containing spaces goes in
     \"       a double quote
     \n       a line break
     \{       a literal { (so it is not treated as a variable)
+    [i]...[/i]  italics (PC and Wii U; the 3DS shows the text upright)
   Text types out gradually; A completes it, A again continues.
   An accumulating NVL game retains dialogue until a separate `page` command.
   `page` clears the accumulated text without an extra button press. Include

@@ -160,6 +160,9 @@ typedef enum {
 	PLAY_NONE, PLAY_TEXT, PLAY_MENU, PLAY_TIMER, PLAY_END, PLAY_VIDEO, PLAY_WAITBG, PLAY_GALLERY
 } Wait;
 
+#define SELECT_ROWS 6          /* game list rows on the bottom screen */
+#define SELECT_EXIT_Y 200.0f   /* the game list's Exit button */
+static int start_requested;    /* acts like START on the next frame */
 static char game_names[MAX_GAMES][64];
 static char game_titles[MAX_GAMES][64];   /* "title" from each game's game.3vc, or empty */
 static int game_count;
@@ -1257,6 +1260,30 @@ static int save_slot(int slot)
 	return 1;
 }
 
+/* "[i]" ... "[/i]" in dialogue: italic markers for renderers that support them (PC, Wii U);
+   removed elsewhere (the 3DS system font has no italics). */
+static void apply_italics(char *text)
+{
+	if (strstr(text, "[i]") == NULL && strstr(text, "[/i]") == NULL) return;
+	char *out = text;
+	for (const char *in = text; *in; ) {
+		if (!strncmp(in, "[i]", 3)) {
+#ifdef VN_HAS_ITALICS
+			*out++ = VN_ITALIC_ON;
+#endif
+			in += 3;
+		} else if (!strncmp(in, "[/i]", 4)) {
+#ifdef VN_HAS_ITALICS
+			*out++ = VN_ITALIC_OFF;
+#endif
+			in += 4;
+		} else {
+			*out++ = *in++;
+		}
+	}
+	*out = '\0';
+}
+
 static void show_event(void)
 {
 	switch (event.type) {
@@ -1897,6 +1924,7 @@ static void advance(void)
 		gs_next(program, &state, &event);
 		if (!extras_mode) globals_sync();
 		if (event.type == GS_EV_SAY) {
+			apply_italics(event.text);
 			held_say = event;
 			say_held = 1;
 		} else if (event.type != GS_EV_SFX && event.type != GS_EV_MUSIC && event.type != GS_EV_WAIT) {
@@ -3361,8 +3389,8 @@ static void draw_bottom(C3D_RenderTarget *target)
 			draw_wrapped("No games found. Put each game in sd:/3ds/3dvn/games/NAME/ with a main.3vs script.",
 				14, 40, BOTTOM_W - 28, 0.45f, dim, Z_TEXT);
 		}
-		int first = select_cursor >= 7 ? select_cursor - 6 : 0;
-		for (int index = first; index < game_count && index < first + 7; ++index) {
+		int first = select_cursor >= SELECT_ROWS ? select_cursor - SELECT_ROWS + 1 : 0;
+		for (int index = first; index < game_count && index < first + SELECT_ROWS; ++index) {
 			rect(14, 30.0f + (float)(index - first) * 28.0f, BOTTOM_W - 28, 24,
 				index == select_cursor ? COLOR_ACCENT : C2D_Color32(40, 62, 66, 255), Z_BOX);
 			draw_line(game_titles[index][0] ? game_titles[index] : game_names[index], 22,
@@ -3370,7 +3398,9 @@ static void draw_bottom(C3D_RenderTarget *target)
 				index == select_cursor ? C2D_Color32(10, 16, 18, 255) : C2D_Color32(220, 230, 225, 255),
 				Z_TEXT, BOTTOM_W - 44);
 		}
-		draw_line("A select   START exit", 14, 224, 0.4f, dim, Z_TEXT, 0.0f);
+		/* A tappable Exit button (the same as START) */
+		draw_panel(IMG_ITEM, 14, SELECT_EXIT_Y, BOTTOM_W - 28, 30, C2D_Color32(40, 62, 66, 255), Z_BOX);
+		draw_line("Exit", 26, SELECT_EXIT_Y + 6, 0.5f, C2D_Color32(220, 230, 225, 255), Z_TEXT, 0.0f);
 		return;
 	}
 	if (mode == MODE_ERROR) {
@@ -4067,6 +4097,10 @@ int main(void)
 		hidScanInput();
 		u32 down = hidKeysDown();
 		u32 repeat = hidKeysDownRepeat();
+		if (start_requested) {   /* e.g. the game list's Exit button */
+			start_requested = 0;
+			down |= KEY_START;
+		}
 		u32 now = now_ms();
 		float dt = (float)(now - last) / 1000.0f;
 		last = now;
@@ -4104,6 +4138,14 @@ int main(void)
 #endif
 
 		if (mode == MODE_SELECT) {
+			if (down & KEY_TOUCH) {
+				touchPosition touch;
+				hidTouchRead(&touch);
+				if (touch.py >= SELECT_EXIT_Y) {
+					start_requested = 1;   /* the Exit button */
+					down &= ~(u32)KEY_TOUCH;
+				}
+			}
 			if (game_count > 0) {
 				if (down & KEY_DDOWN) {
 					select_cursor = (select_cursor + 1) % game_count;
@@ -4114,9 +4156,9 @@ int main(void)
 				if (down & KEY_TOUCH) {
 					touchPosition touch;
 					hidTouchRead(&touch);
-					int first = select_cursor >= 7 ? select_cursor - 6 : 0;
+					int first = select_cursor >= SELECT_ROWS ? select_cursor - SELECT_ROWS + 1 : 0;
 					int index = first + ((int)touch.py - 30) / 28;
-					if (touch.py >= 30 && index < game_count) {
+					if (touch.py >= 30 && touch.py < 30 + SELECT_ROWS * 28 && index < game_count) {
 						select_cursor = index;
 						down |= KEY_A;
 					}
