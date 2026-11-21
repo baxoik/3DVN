@@ -2419,8 +2419,8 @@ static void draw_scene(void)
 		Picture *picture = sprite->active ? get_picture("sprites", sprite->asset) : NULL;
 		if (picture != NULL && !strcmp(sprite->pos, "face")) {
 			/* Speaker portrait: fixed above the text box's left corner, unaffected by camera effects. */
-			int face_in_box = config.num[NUM_FACE_BOX]
-				&& display_options_use_custom(&display_options, current_textbox_available());
+			/* face_box puts portraits inside the text box, the default box included */
+			int face_in_box = config.num[NUM_FACE_BOX];
 			if (!display_options.nvl && !face_in_box && !bottom_text_active()) {
 				C2D_ImageTint tint;
 				C2D_AlphaImageTint(&tint, sprite->alpha);
@@ -2481,7 +2481,7 @@ static void draw_textbox(void)
 		rect(bx, by, bw, 2, custom ? theme_accent() : COLOR_ACCENT, Z_BOX);
 	}
 	float face_inset = 0.0f;
-	if (custom && !display_options.nvl && n[NUM_FACE_BOX]) {
+	if (!display_options.nvl && config.num[NUM_FACE_BOX]) {
 		for (int index = 0; index < MAX_SPRITES; ++index) {
 			const Sprite *sprite = &scene.sprites[index];
 			if (!sprite->active || strcmp(sprite->pos, "face") != 0 || sprite->alpha <= 0.0f) continue;

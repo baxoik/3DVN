@@ -51,8 +51,8 @@ static C3D_RenderTarget *current_target;
 static int running = 1;
 
 #ifdef __WIIU__
-#define TOP_SCALE 3.0f      /* 1200x720 on a 1280x720 TV */
-#define BOTTOM_SCALE 2.0f   /* 640x480 on the 854x480 GamePad */
+static float TOP_SCALE = 3.0f;      /* 1200x720 on a 720p TV; 4.5 (1800x1080) on a 1080p one */
+#define BOTTOM_SCALE 2.0f           /* 640x480 on the 854x480 GamePad (its full resolution) */
 #else
 static float TOP_SCALE = 2.0f, BOTTOM_SCALE = 2.0f;
 #endif
@@ -117,8 +117,28 @@ void gfxInitDefault(void)
 	/* One GX2 swap updates TV and GamePad together. Presenting each window would swap twice
 	   per frame (each screen alternating between new and stale buffers: flicker), so the TV
 	   window never swaps and the GamePad window, presented last, swaps both. */
-	outputs[0].window = SDL_CreateWindow("3DVN", 0, 0, 1280, 720,
+	/* Match the console's TV output: 1080p when it is set to 1080p, else 720p. */
+	int tv_w = 1280, tv_h = 720;
+	for (int d = 0; d < SDL_GetNumVideoDisplays(); ++d) {
+		SDL_DisplayMode mode;
+		if (SDL_GetDesktopDisplayMode(d, &mode) == 0) {
+			boot_log("display %d: %dx%d", d, mode.w, mode.h);
+			if (d == 0 && mode.w >= 1920 && mode.h >= 1080) {
+				tv_w = 1920;
+				tv_h = 1080;
+			}
+		}
+	}
+	outputs[0].window = SDL_CreateWindow("3DVN", 0, 0, tv_w, tv_h,
 		SDL_WINDOW_WIIU_TV_ONLY | SDL_WINDOW_WIIU_PREVENT_SWAP);
+	if (outputs[0].window == NULL && tv_h > 720) {   /* fall back to 720p */
+		boot_log("1080p TV window failed: %s", SDL_GetError());
+		tv_w = 1280;
+		tv_h = 720;
+		outputs[0].window = SDL_CreateWindow("3DVN", 0, 0, tv_w, tv_h,
+			SDL_WINDOW_WIIU_TV_ONLY | SDL_WINDOW_WIIU_PREVENT_SWAP);
+	}
+	TOP_SCALE = tv_h >= 1080 ? 4.5f : 3.0f;
 	outputs[1].window = SDL_CreateWindow("3DVN", 0, 0, 854, 480, SDL_WINDOW_WIIU_GAMEPAD_ONLY);
 	output_count = 2;
 	targets[GFX_TOP] = (C3D_RenderTarget){GFX_TOP, 0, TOP_SCALE, TOP_W, TOP_H, NULL, {0}, 0};

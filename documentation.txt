@@ -555,7 +555,7 @@ Dialogue box (pixels on the 400x240 top screen; defaults in brackets)
                            edge, bottom-aligned; move names and dialogue to
                            the right while visible. Portraits are scaled down
                            if needed. 0: keep the original position above the
-                           box. Applies only when the custom box is selected.
+                           box. Applies to the custom and the default box.
     nvl_dim [155]          Scene dimming opacity, 0-255
     nvl_border [1]         Draw the engine border: 1 yes, 0 no
     nvl_margin_x [12]      Left/right text inset, 0-180 pixels
