@@ -419,6 +419,55 @@ static void globals_sync(void)
 	if (changed) globals_save();
 }
 
+/* Playtime per game in SETTINGS_DIR/<game>.3vtime (seconds). It counts only while the
+   story is on screen with no menu open, and not after 90 s without input or a new line. */
+static double playtime;
+static float playtime_unsaved;
+static u32 last_activity;
+#define IDLE_LIMIT_MS 90000u
+
+static void playtime_path(char *path, size_t size)
+{
+	snprintf(path, size, SETTINGS_DIR "/%s.3vtime", game_name);
+}
+
+static void playtime_load(void)
+{
+	char path[220];
+	playtime = 0.0;
+	playtime_unsaved = 0.0f;
+	playtime_path(path, sizeof(path));
+	FILE *file = fopen(path, "r");
+	if (file != NULL) {
+		if (fscanf(file, "%lf", &playtime) != 1 || playtime < 0.0) playtime = 0.0;
+		fclose(file);
+	}
+}
+
+static void playtime_save(void)
+{
+	if (game_name[0] == '\0' || playtime_unsaved <= 0.0f) return;
+	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST) || (mkdir(SETTINGS_DIR, 0777) != 0 && errno != EEXIST)) return;
+	char path[220];
+	playtime_path(path, sizeof(path));
+	FILE *file = fopen(path, "w");
+	if (file == NULL) return;
+	fprintf(file, "%.0f\n", playtime);
+	fclose(file);
+	playtime_unsaved = 0.0f;
+}
+
+/* "Playtime 1:05   14:32" (hours:minutes played, and the time of day in 24 h) */
+static void status_text(char *out, size_t size)
+{
+	long minutes = (long)(playtime / 60.0);
+	char clock[8] = "";
+	time_t now = time(NULL);
+	struct tm *parts = localtime(&now);
+	if (parts != NULL) strftime(clock, sizeof(clock), "%H:%M", parts);
+	snprintf(out, size, "Playtime %ld:%02ld   %s", minutes / 60, minutes % 60, clock);
+}
+
 static void read_path(char *path, size_t size)
 {
 	snprintf(path, size, SETTINGS_DIR "/%s.3vread", game_name);
@@ -1370,6 +1419,7 @@ static void show_event(void)
 	case GS_EV_SAY:
 		waiting = PLAY_TEXT;
 		chars_shown = 0.0f;
+		last_activity = now_ms();   /* a new line (also in auto mode) counts as playing */
 		advance_visible = 0;
 		auto_wait = 0.0f;
 		line_voiced = audio_sfx_playing();
@@ -1768,6 +1818,8 @@ static void start_game(const char *name)
 	load_display_options();
 	read_load();
 	globals_load();
+	playtime_load();
+	last_activity = now_ms();
 	gs_state_init(program, &state);
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
@@ -3434,6 +3486,11 @@ static void draw_bottom_controls(void)
 		return;
 	}
 	draw_line(config.title[0] != '\0' ? config.title : game_name, 12, 10, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 24);
+	{
+		char status[48];
+		status_text(status, sizeof(status));
+		draw_line(status, 12, 106, 0.42f, theme_text(), Z_TEXT, 0.0f);
+	}
 	draw_line(ui_hidden ? "Text hidden - tap or press A" : "Tap here or press A: next line",
 		12, 44, 0.45f, theme_text(), Z_TEXT, BOTTOM_W - 24);
 	draw_line("Hold R: fast-forward      Y: auto", 12, 66, 0.42f, dim, Z_TEXT, BOTTOM_W - 24);
@@ -3832,6 +3889,11 @@ static void draw_bottom(C3D_RenderTarget *target)
 		return;
 	}
 	draw_line(config.title[0] != '\0' ? config.title : game_name, 14, 6, 0.55f, theme_accent(), Z_TEXT, BOTTOM_W - 28);
+	{
+		char status[48];
+		status_text(status, sizeof(status));
+		draw_line(status, 14, 208, 0.42f, theme_text(), Z_TEXT, 0.0f);
+	}
 	for (int index = 0; index < COUNT_OF(play_buttons); ++index) {
 		draw_button_box(&play_buttons[index], index == AUTO_BUTTON && auto_mode);
 	}
@@ -3848,6 +3910,7 @@ static void draw_bottom(C3D_RenderTarget *target)
 static void leave_game(void)
 {
 	read_save();
+	playtime_save();
 	extras_mode = 0;
 	extras_available = 0;
 	auto_mode = 0;
@@ -4446,6 +4509,16 @@ int main(void)
 #endif
 
 		audio_update(dt);
+		if (down || hidKeysHeld()) last_activity = now;
+		if (mode == MODE_PLAY && panel == PANEL_NONE && !extras_mode && now - last_activity < IDLE_LIMIT_MS
+#ifdef EXIT_MENU
+			&& !exit_open
+#endif
+			) {
+			playtime += dt;
+			playtime_unsaved += dt;
+			if (playtime_unsaved > 30.0f) playtime_save();
+		}
 #ifdef AUTOTEST
 		{
 			static char logged_notice[sizeof(notice)], logged_message[sizeof(message)];
@@ -4559,6 +4632,8 @@ int main(void)
 	}
 
 	stop_video();
+	playtime_save();   /* the app is closing (START / exit menu): keep the last minutes */
+	read_save();
 	gs_free(program);
 	clear_cache();
 	audio_exit();
