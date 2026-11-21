@@ -47,7 +47,13 @@ sprites_dir = os.path.join(game, "sprites")
 faces_available = {f[:-4] for f in os.listdir(sprites_dir) if f.startswith("face_") and f.endswith(".png")}
 
 
+FONT_TAG = re.compile(r'\[\s*(?:font|resetfont)\b[^\]]*\]')
+
+
 def norm(line):
+    # Font tags are compared away: the game's lines may still carry "[ font italic=... ]"
+    # (removed later by fix_leaked_commands.py) while the re-run converter drops them.
+    line = FONT_TAG.sub("", line)
     return re.sub(r"[^a-z0-9]+", "", re.sub(r'^[A-Za-z0-9_]+: ', '', line).lower())
 
 

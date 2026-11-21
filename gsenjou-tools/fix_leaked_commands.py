@@ -11,13 +11,16 @@ through into the scene anyway. Here:
   "@return"           -> return            (the branch skips the scene again)
   "@fobgm ..."        -> music stop fade 1 (fade out the music)
   "@jump ... ex_evmode.ks ..." and "; ..." -> removed (gallery mode, comments)
+  [ font italic="true" ] ... [ resetfont ]  -> removed from dialogue (no italics in 3DVN;
+                          the spaced form slipped past the importer's tag handling)
 Any other "@..." text line is reported and left alone.
 """
 import os, re, sys
 
 game = sys.argv[1]
 TEXT = re.compile(r'^(\s*)"(.*)"\s*$')
-counts = {"return": 0, "music fade": 0, "removed": 0}
+counts = {"return": 0, "music fade": 0, "removed": 0, "font tags": 0}
+FONT_TAG = re.compile(r'\[\s*(?:font|resetfont)\b[^\]]*\]\s?')
 unknown = []
 for name in sorted(os.listdir(os.path.join(game, "ch"))):
     if not name.endswith(".3vs"):
@@ -26,6 +29,11 @@ for name in sorted(os.listdir(os.path.join(game, "ch"))):
     lines = open(path, encoding="utf-8").read().split("\n")
     out = []
     for line in lines:
+        if "font" in line and line.lstrip().startswith(('"', "choice")) or re.match(r'^\s*[a-z_]+: "', line):
+            cleaned, n = FONT_TAG.subn(lambda t: " " if t.group(0).endswith(" ") else "", line)
+            if n:
+                counts["font tags"] += n
+                line = re.sub(r'  +', ' ', cleaned)
         m = TEXT.match(line)
         body = m.group(2).replace('\\"', '"').strip() if m else ""
         if m and body.startswith("@return"):
