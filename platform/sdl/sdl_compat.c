@@ -510,7 +510,7 @@ void C2D_TextGetDimensions(const C2D_Text *text, float scale_x, float scale_y, f
 
 /* ---------------------------------------------------------------- draw queue */
 
-enum { CMD_IMAGE, CMD_RECT, CMD_TEXT };
+enum { CMD_IMAGE, CMD_RECT, CMD_TEXT, CMD_TRIANGLE };
 typedef struct {
 	int type;
 	float z;
@@ -587,6 +587,19 @@ bool C2D_DrawRectangle(float x, float y, float z, float w, float h, u32 c0, u32 
 	cmd->type = CMD_RECT;
 	cmd->z = z;
 	cmd->x = x; cmd->y = y; cmd->w = w; cmd->h = h;
+	cmd->color = c0;
+	return true;
+}
+
+/* One colour (c0) only; the corners are kept in x,y / w,h / src_x,src_y. */
+bool C2D_DrawTriangle(float x0, float y0, u32 c0, float x1, float y1, u32 c1, float x2, float y2, u32 c2, float z)
+{
+	(void)c1; (void)c2;
+	DrawCmd *cmd = push_cmd();
+	if (cmd == NULL) return false;
+	cmd->type = CMD_TRIANGLE;
+	cmd->z = z;
+	cmd->x = x0; cmd->y = y0; cmd->w = x1; cmd->h = y1; cmd->src_x = x2; cmd->src_y = y2;
 	cmd->color = c0;
 	return true;
 }
@@ -817,6 +830,15 @@ static void replay(C3D_RenderTarget *t)
 			SDL_SetRenderDrawColor(r, k & 255, k >> 8 & 255, k >> 16 & 255, k >> 24 & 255);
 			SDL_FRect rect = {cmd->x * s, cmd->y * s, cmd->w * s, cmd->h * s};
 			SDL_RenderFillRectF(r, &rect);
+		} else if (cmd->type == CMD_TRIANGLE) {
+			u32 k = cmd->color;
+			SDL_Color color = {k & 255, k >> 8 & 255, k >> 16 & 255, k >> 24 & 255};
+			SDL_Vertex corners[3] = {
+				{{cmd->x * s, cmd->y * s}, color, {0, 0}},
+				{{cmd->w * s, cmd->h * s}, color, {0, 0}},
+				{{cmd->src_x * s, cmd->src_y * s}, color, {0, 0}},
+			};
+			SDL_RenderGeometry(r, NULL, corners, 3, NULL, 0);
 		} else if (cmd->type == CMD_IMAGE) {
 			SDL_Texture *texture = texture_for(cmd->tex, t->output);
 			if (texture == NULL) continue;

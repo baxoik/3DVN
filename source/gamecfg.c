@@ -5,10 +5,11 @@
 #include <string.h>
 
 static const char *const default_labels[LABEL_COUNT] = {
-	"Save Game", "Load Game", "Backlog", "Glossary", "Quit to Game List", "Options"
+	"Save Game", "Load Game", "Backlog", "Glossary", "Quit to Game List", "Options", "Endings", "Guide"
 };
 static const char *const label_keys[LABEL_COUNT] = {
-	"label_save", "label_load", "label_backlog", "label_glossary", "label_quit", "label_options"
+	"label_save", "label_load", "label_backlog", "label_glossary", "label_quit", "label_options",
+	"label_endings", "label_guide"
 };
 
 static const char *const image_keys[IMG_COUNT] = {

@@ -9,6 +9,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <ctype.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -163,11 +164,12 @@ typedef struct {
 } Button;
 
 typedef enum {
-	PANEL_NONE, PANEL_MENU, PANEL_BACKLOG, PANEL_SAVE, PANEL_LOAD, PANEL_GLOSSARY, PANEL_QUIT, PANEL_OPTIONS
+	PANEL_NONE, PANEL_MENU, PANEL_BACKLOG, PANEL_SAVE, PANEL_LOAD, PANEL_GLOSSARY, PANEL_QUIT, PANEL_OPTIONS,
+	PANEL_ENDINGS, PANEL_GUIDE
 } Panel;
 
 typedef enum { MODE_SELECT, MODE_TITLE, MODE_PLAY, MODE_ERROR } Mode;
-typedef enum { TITLE_START, TITLE_LOAD, TITLE_OPTIONS, TITLE_EXTRAS } TitleItem;
+typedef enum { TITLE_START, TITLE_LOAD, TITLE_OPTIONS, TITLE_EXTRAS, TITLE_ENDINGS, TITLE_GUIDE } TitleItem;
 typedef enum {
 	PLAY_NONE, PLAY_TEXT, PLAY_MENU, PLAY_TIMER, PLAY_END, PLAY_VIDEO, PLAY_WAITBG, PLAY_GALLERY
 } Wait;
@@ -229,7 +231,7 @@ static int advance_visible;
 static int advance_available;
 static int menu_cursor;
 static int select_cursor;
-static int title_items[4], title_count, title_cursor;
+static int title_items[6], title_count, title_cursor;
 static int extras_available, extras_mode;
 static Panel panel;
 static int panel_cursor;
@@ -335,6 +337,10 @@ static void mark_read(const char *script, int pc)
 #define MAX_GLOBALS 64
 static struct { char name[GS_NAME_LEN]; long number; } globals[MAX_GLOBALS];
 static int global_count;
+
+static void draw_endings_top(void);
+static void draw_guide_top(void);
+static void close_panel(void);
 
 static int is_global_name(const char *name)
 {
@@ -466,6 +472,301 @@ static void status_text(char *out, size_t size)
 	struct tm *parts = localtime(&now);
 	if (parts != NULL) strftime(clock, sizeof(clock), "%H:%M", parts);
 	snprintf(out, size, "Playtime %ld:%02ld   %s", minutes / 60, minutes % 60, clock);
+}
+
+/* ---- Endings checklist ----
+   A game lists its endings in endings.txt (in the game folder / archive), or in
+   games/<game>.endings.txt next to it (that one wins), one per line:
+       Sora - good ending = g_0a g_10
+   An ending counts as seen when any of the globals after "=" is non-zero. When a story
+   ends ("stop", or a "return" with nothing to return to) the engine itself sets
+   g_end_<chapter file>, e.g. g_end_gm04, so games without their own flags can use that. */
+#define MAX_ENDINGS 40
+#define ENDING_VARS 6
+typedef struct {
+	char name[64];
+	char vars[ENDING_VARS][GS_NAME_LEN];
+	int var_count;
+} Ending;
+static Ending endings[MAX_ENDINGS];
+static int ending_count, ending_top;
+
+static void endings_parse(const char *text)
+{
+	ending_count = 0;
+	while (*text && ending_count < MAX_ENDINGS) {
+		const char *end = strchr(text, '\n');
+		size_t length = end != NULL ? (size_t)(end - text) : strlen(text);
+		char line[256];
+		if (length >= sizeof(line)) length = sizeof(line) - 1;
+		memcpy(line, text, length);
+		line[length] = '\0';
+		text += length + (end != NULL);
+		char *equals = strrchr(line, '=');
+		char *start = line;
+		while (*start == ' ' || *start == '\t' || *start == '\r') ++start;
+		if (equals == NULL || *start == '#') continue;
+		*equals = '\0';
+		Ending *ending = &endings[ending_count];
+		char *name_end = equals;
+		while (name_end > start && (name_end[-1] == ' ' || name_end[-1] == '\t')) --name_end;
+		*name_end = '\0';
+		snprintf(ending->name, sizeof(ending->name), "%s", start);
+		ending->var_count = 0;
+		for (char *word = strtok(equals + 1, " \t\r,|"); word != NULL && ending->var_count < ENDING_VARS;
+			word = strtok(NULL, " \t\r,|")) {
+			if (is_global_name(word)) {
+				snprintf(ending->vars[ending->var_count++], GS_NAME_LEN, "%s", word);
+			}
+		}
+		if (ending->name[0] != '\0' && ending->var_count > 0) ++ending_count;
+	}
+}
+
+static unsigned char *read_file(const char *path, size_t *size);
+
+static void endings_load(void)
+{
+	char path[256];
+	ending_count = 0;
+	snprintf(path, sizeof(path), GAMES_DIR "/%s.endings.txt", game_name);
+	FILE *file = fopen(path, "rb");
+	char *text = NULL;
+	if (file != NULL) {
+		text = calloc(1, 16384);
+		if (text != NULL) fread(text, 1, 16383, file);
+		fclose(file);
+	} else {
+		size_t size = 0;
+		snprintf(path, sizeof(path), "%s/endings.txt", game_dir);
+		unsigned char *data = read_file(path, &size);
+		if (data != NULL) {
+			text = calloc(1, size + 1);
+			if (text != NULL) memcpy(text, data, size);
+			free(data);
+		}
+	}
+	if (text != NULL) endings_parse(text);
+	free(text);
+}
+
+static int ending_seen(const Ending *ending)
+{
+	for (int v = 0; v < ending->var_count; ++v) {
+		for (int g = 0; g < global_count; ++g) {
+			if (globals[g].number != 0 && strcmp(globals[g].name, ending->vars[v]) == 0) return 1;
+		}
+	}
+	return 0;
+}
+
+/* The story ended: remember in which chapter file (g_end_<chapter>). */
+static void record_story_end(void)
+{
+	const char *script = gs_variable_text(&state, "_script");
+	const char *base = script != NULL && script[0] ? script : "main";
+	const char *slash = strrchr(base, '/');
+	if (slash != NULL) base = slash + 1;
+	char name[GS_NAME_LEN];
+	snprintf(name, sizeof(name), "g_end_%s", base);
+	char *dot = strrchr(name, '.');
+	if (dot != NULL && dot > name + 6) *dot = '\0';
+	gs_variable_set_number(&state, name, 1);
+	globals_sync();
+}
+
+/* ---- Guide: games/<game>.txt, read on the bottom screen ---- */
+static float measure_text(const char *text, size_t length, void *user);
+static float swap_measure_scale(float scale);   /* returns the previous one */
+static char guide_file[256];
+static char *guide_text;          /* the file as UTF-8 */
+static int *guide_starts, *guide_ends, guide_lines, guide_capacity;
+static float guide_scroll, guide_velocity;   /* pixels from the top; swipe momentum */
+static int guide_drag, guide_drag_moved;
+static float guide_drag_y;
+#define GUIDE_SCALE 0.42f
+#define GUIDE_TOP 22.0f
+#define GUIDE_BOTTOM 206.0f
+#define GUIDE_LINE_H (LINE_UNITS_MAIN * GUIDE_SCALE)
+#define LINE_UNITS_MAIN 30.0f
+
+static void guide_find(void)
+{
+	guide_file[0] = '\0';
+	const char *names[2] = {game_name, config.title};
+	for (int i = 0; i < 2; ++i) {
+		if (names[i][0] == '\0') continue;
+		char path[256];
+		snprintf(path, sizeof(path), GAMES_DIR "/%s.txt", names[i]);
+		FILE *file = fopen(path, "rb");
+		if (file != NULL) {
+			fclose(file);
+			snprintf(guide_file, sizeof(guide_file), "%s", path);
+			return;
+		}
+	}
+}
+
+static void guide_free(void)
+{
+	free(guide_text);
+	free(guide_starts);
+	free(guide_ends);
+	guide_text = NULL;
+	guide_starts = guide_ends = NULL;
+	guide_lines = guide_capacity = 0;
+}
+
+static void guide_position_path(char *path, size_t size)
+{
+	snprintf(path, size, SETTINGS_DIR "/%s.3vguide", game_name);
+}
+
+static void guide_add_line(int start, int end)
+{
+	if (guide_lines == guide_capacity) {
+		int capacity = guide_capacity ? guide_capacity * 2 : 1024;
+		int *starts = realloc(guide_starts, sizeof(int) * (size_t)capacity);
+		if (starts == NULL) return;
+		guide_starts = starts;
+		int *ends = realloc(guide_ends, sizeof(int) * (size_t)capacity);
+		if (ends == NULL) return;
+		guide_ends = ends;
+		guide_capacity = capacity;
+	}
+	guide_starts[guide_lines] = start;
+	guide_ends[guide_lines++] = end;
+}
+
+static int valid_utf8(const unsigned char *data, size_t size)
+{
+	for (size_t i = 0; i < size;) {
+		unsigned char c = data[i];
+		int extra = c < 0x80 ? 0 : (c & 0xE0) == 0xC0 ? 1 : (c & 0xF0) == 0xE0 ? 2 : (c & 0xF8) == 0xF0 ? 3 : -1;
+		if (extra < 0 || i + (size_t)extra >= size + (extra == 0)) return 0;
+		for (int k = 1; k <= extra; ++k) if ((data[i + k] & 0xC0) != 0x80) return 0;
+		i += (size_t)extra + 1;
+	}
+	return 1;
+}
+
+/* Reads the guide and breaks it into lines that fit the bottom screen. */
+static int guide_load(void)
+{
+	guide_free();
+	FILE *file = fopen(guide_file, "rb");
+	if (file == NULL) return 0;
+	fseek(file, 0, SEEK_END);
+	long length = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	if (length < 0 || length > 8 * 1024 * 1024) { fclose(file); return 0; }
+	unsigned char *raw = malloc((size_t)length + 1);
+	if (raw == NULL) { fclose(file); return 0; }
+	size_t got = fread(raw, 1, (size_t)length, file);
+	fclose(file);
+	size_t start = got >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF ? 3 : 0;
+	int utf8 = valid_utf8(raw + start, got - start);
+	guide_text = malloc((got - start) * 4 + 1);   /* tabs become 4 spaces; Latin-1 bytes 2 */
+	if (guide_text == NULL) { free(raw); return 0; }
+	size_t used = 0;
+	for (size_t i = start; i < got; ++i) {
+		unsigned char c = raw[i];
+		if (c == '\r') continue;
+		if (c == '\t') { memcpy(guide_text + used, "    ", 4); used += 4; continue; }
+		if (c >= 0x80 && !utf8) {   /* not UTF-8: read as Latin-1 */
+			guide_text[used++] = (char)(0xC0 | c >> 6);
+			guide_text[used++] = (char)(0x80 | (c & 0x3F));
+			continue;
+		}
+		guide_text[used++] = (char)c;
+	}
+	guide_text[used] = '\0';
+	free(raw);
+	/* Text files are often wrapped at ~72 columns, wider than the screen: a sentence broken
+	   there would show as a long line plus a stub. Rejoin a long line with the next one
+	   when that continues the sentence (starts with a letter, not indented or a list). */
+	for (char *line = guide_text; *line;) {
+		char *newline = strchr(line, '\n');
+		if (newline == NULL) break;
+		char *next = newline + 1;
+		size_t length = (size_t)(newline - line);
+		char last = length > 0 ? newline[-1] : '\0';
+		int continues = length >= 50 && line[0] != ' ' && last != ':' && last != ' '
+			&& ((*next >= 'a' && *next <= 'z') || (*next >= 'A' && *next <= 'Z') || *next == '(' || *next == '"')
+			&& !(next[1] == '.' || next[1] == ')');
+		if (continues) *newline = ' ';
+		line = next;
+	}
+
+	float previous = swap_measure_scale(GUIDE_SCALE);
+	const float width = BOTTOM_W - 34.0f;
+	for (int at = 0; guide_text[at] != '\0' || at == 0;) {
+		const char *newline = strchr(guide_text + at, '\n');
+		int end = newline != NULL ? (int)(newline - guide_text) : (int)used;
+		/* greedy wrap of [at, end) at spaces; very long words are cut */
+		int line = at;
+		while (line < end) {
+			int fit = line, last_space = -1, i = line;
+			while (i < end) {
+				int next = i + 1;
+				while (next < end && ((unsigned char)guide_text[next] & 0xC0) == 0x80) ++next;
+				if (measure_text(guide_text + line, (size_t)(next - line), NULL) > width && fit > line) break;
+				if (guide_text[i] == ' ') last_space = i;
+				fit = next;
+				i = next;
+			}
+			if (fit < end && last_space > line) fit = last_space + 1;
+			int shown_end = fit;
+			while (shown_end > line && guide_text[shown_end - 1] == ' ') --shown_end;
+			guide_add_line(line, shown_end);
+			line = fit;
+			/* a divider (one symbol repeated, like ~~~~ or ----) is cut to fit, not wrapped */
+			int divider = end - at >= 8 && !isalnum((unsigned char)guide_text[at]) && guide_text[at] != ' ';
+			for (int k = at; divider && k < end; ++k) divider = guide_text[k] == guide_text[at];
+			if (divider) line = end;
+		}
+		if (line == at) guide_add_line(at, at);   /* empty line */
+		if (newline == NULL) break;
+		at = end + 1;
+	}
+	swap_measure_scale(previous);
+
+	/* back to where reading stopped (a byte offset, so it survives other line widths) */
+	guide_scroll = 0.0f;
+	guide_velocity = 0.0f;
+	char path[220];
+	guide_position_path(path, sizeof(path));
+	FILE *saved = fopen(path, "r");
+	long offset = 0;
+	if (saved != NULL) {
+		if (fscanf(saved, "%ld", &offset) != 1) offset = 0;
+		fclose(saved);
+	}
+	for (int index = 0; index < guide_lines; ++index) {
+		if (guide_starts[index] > offset) break;
+		guide_scroll = (float)index * GUIDE_LINE_H;
+	}
+	return 1;
+}
+
+static float guide_max_scroll(void)
+{
+	float total = (float)guide_lines * GUIDE_LINE_H - (GUIDE_BOTTOM - GUIDE_TOP);
+	return total > 0.0f ? total : 0.0f;
+}
+
+static void guide_save_position(void)
+{
+	if (guide_lines == 0) return;
+	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST) || (mkdir(SETTINGS_DIR, 0777) != 0 && errno != EEXIST)) return;
+	int top = (int)(guide_scroll / GUIDE_LINE_H + 0.5f);
+	if (top >= guide_lines) top = guide_lines - 1;
+	char path[220];
+	guide_position_path(path, sizeof(path));
+	FILE *file = fopen(path, "w");
+	if (file == NULL) return;
+	fprintf(file, "%d\n", guide_starts[top]);
+	fclose(file);
 }
 
 static void read_path(char *path, size_t size)
@@ -1108,6 +1409,13 @@ static void scan_games(void)
 /* ---------- backlog ---------- */
 
 static float measure_scale = LOG_SCALE;
+
+static float swap_measure_scale(float scale)
+{
+	float previous = measure_scale;
+	measure_scale = scale;
+	return previous;
+}
 
 static float measure_text(const char *text, size_t length, void *user)
 {
@@ -1820,6 +2128,8 @@ static void start_game(const char *name)
 	globals_load();
 	playtime_load();
 	last_activity = now_ms();
+	endings_load();
+	guide_find();
 	gs_state_init(program, &state);
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
@@ -1837,6 +2147,7 @@ static void start_game(const char *name)
 	if (extras_available) {
 		title_items[title_count++] = TITLE_EXTRAS;
 	}
+	if (ending_count > 0) title_items[title_count++] = TITLE_ENDINGS;
 	title_cursor = 0;
 	refresh_slots();
 	mode = MODE_TITLE;
@@ -2172,6 +2483,7 @@ static void advance(void)
 				return_to_title();
 				return;
 			}
+			record_story_end();
 			waiting = PLAY_END;
 			return;
 		case GS_EV_ERROR: {
@@ -2873,6 +3185,19 @@ static int backlog_row_age(int row)   /* row 0 is the top one */
 
 static void scroll_backlog(int direction);
 
+/* A round-cornered button with a play triangle (voice replay in the backlog). */
+static void draw_play_icon(float x, float y, float size)
+{
+	const u32 face = theme_accent();
+	const float r = size * 0.22f;
+	rect(x + r, y, size - 2 * r, size, face, Z_BOX + 0.01f);
+	rect(x, y + r, size, size - 2 * r, face, Z_BOX + 0.01f);
+	rect(x + r * 0.3f, y + r * 0.3f, size - r * 0.6f, size - r * 0.6f, face, Z_BOX + 0.01f);
+	const u32 mark = theme_dark_text();
+	float cx = x + size * 0.54f, cy = y + size * 0.5f, h = size * 0.24f;
+	C2D_DrawTriangle(cx - h * 0.8f, cy - h, mark, cx - h * 0.8f, cy + h, mark, cx + h * 1.0f, cy, mark, Z_BOX + 0.02f);
+}
+
 static void draw_backlog_touch(void)
 {
 	const u32 dim = C2D_Color32(150, 170, 165, 255);
@@ -2888,7 +3213,7 @@ static void draw_backlog_touch(void)
 		float y = LOG_TOP + row * LOG_ROW_H;
 		int voiced = log_voice[slot][0] != '\0';
 		rect(8, y, BOTTOM_W - 16, LOG_ROW_H - 4, theme_item(), Z_BOX);
-		float text_w = BOTTOM_W - (voiced ? 76.0f : 32.0f);
+		float text_w = BOTTOM_W - (voiced ? 64.0f : 32.0f);
 		if (entry->speaker[0]) {
 			draw_line(entry->speaker, 14, y + 1, 0.36f, speaker_color(entry->color), Z_TEXT, text_w);
 		}
@@ -2908,8 +3233,7 @@ static void draw_backlog_touch(void)
 		if (length < strlen(shown) && length > 3) strcpy(shown + length - 3, "...");
 		draw_line(shown, 14, y + (entry->speaker[0] ? 15.0f : 8.0f), 0.4f, theme_text(), Z_TEXT, 0.0f);
 		if (voiced) {
-			rect(BOTTOM_W - 58, y + 6, 44, LOG_ROW_H - 16, theme_accent(), Z_BOX + 0.01f);
-			draw_line("Play", BOTTOM_W - 50, y + 8, 0.4f, theme_dark_text(), Z_TEXT, 0.0f);
+			draw_play_icon(BOTTOM_W - 46, y + 4, LOG_ROW_H - 12);
 		}
 	}
 	draw_line("Swipe to scroll   Tap a line: voice   B close", 14, 214, 0.38f, dim, Z_TEXT, BOTTOM_W - 28);
@@ -2966,16 +3290,16 @@ static void backlog_touch_input(u32 down, u32 held)
 static void draw_game_menu(void)
 {
 	draw_backdrop(IMG_MENU_BG, 225);
-	const float row = menu_count > 5 ? 29.0f : 34.0f;
-	const float height = menu_count > 5 ? 25.0f : 28.0f;
+	const float row = menu_count > 6 ? 22.0f : menu_count > 5 ? 29.0f : 34.0f;
+	const float height = menu_count > 6 ? 20.0f : menu_count > 5 ? 25.0f : 28.0f;
 	draw_line(config.menu_title[0] != '\0' ? config.menu_title : "Menu", 60, 14, 0.8f,
 		theme_accent(), Z_OVERLAY_TEXT, TOP_W - 120);
-	float y = menu_count > 5 ? 48.0f : 62.0f;
+	float y = menu_count > 6 ? 42.0f : menu_count > 5 ? 48.0f : 62.0f;
 	for (int index = 0; index < menu_count; ++index, y += row) {
 		int selected = index == menu_cursor_item;
 		draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, 70, y, TOP_W - 140, height,
 			selected ? theme_accent() : theme_panel(215), Z_OVERLAY);
-		draw_line(config.labels[menu_items[index]], 82, y + 5, 0.55f,
+		draw_line(config.labels[menu_items[index]], 82, y + (menu_count > 6 ? 2.0f : 5.0f), menu_count > 6 ? 0.5f : 0.55f,
 			selected && !ui_image(IMG_ITEM_SEL) ? theme_dark_text() : theme_text(), Z_OVERLAY_TEXT, TOP_W - 164);
 	}
 	draw_line("D-pad choose   A confirm   B back", 70, 224, 0.4f, C2D_Color32(150, 170, 165, 255),
@@ -3116,6 +3440,8 @@ static const char *title_item_label(int item)
 	case TITLE_LOAD: return config.title_load;
 	case TITLE_OPTIONS: return config.title_options;
 	case TITLE_EXTRAS: return config.title_extras;
+	case TITLE_ENDINGS: return config.labels[LABEL_ENDINGS];
+	case TITLE_GUIDE: return config.labels[LABEL_GUIDE];
 	default: return "";
 	}
 }
@@ -3187,8 +3513,11 @@ static void draw_title_menu(void)
 	const char *title = config.title[0] != '\0' ? config.title : game_name;
 	draw_line(title, 24, 25, 0.8f, theme_accent(), Z_OVERLAY_TEXT, TOP_W - 48);
 	rect(40, 58, TOP_W - 80, 1, theme_accent(), Z_OVERLAY);
+	/* up to 4 rows at the usual spacing; more (Endings, Guide) closer together */
+	float spacing = title_count > 4 ? 146.0f / (float)title_count : 34.0f;
+	float first = title_count > 4 ? 68.0f : 76.0f;
 	for (int index = 0; index < title_count; ++index) {
-		draw_list_row(76.0f + (float)index * 34.0f,
+		draw_list_row(first + (float)index * spacing,
 			title_item_label(title_items[index]), index == title_cursor);
 	}
 	draw_line("D-pad choose   A confirm   B game list", 40, 224, 0.4f,
@@ -3322,6 +3651,8 @@ static void draw_top(C3D_RenderTarget *target)
 			draw_slot_list();
 		} else if (panel == PANEL_OPTIONS) {
 			draw_options();
+		} else if (panel == PANEL_ENDINGS) {
+			draw_endings_top();
 		} else {
 			draw_title_menu();
 		}
@@ -3354,6 +3685,10 @@ static void draw_top(C3D_RenderTarget *target)
 		draw_glossary();
 	} else if (panel == PANEL_OPTIONS) {
 		draw_options();
+	} else if (panel == PANEL_ENDINGS) {
+		draw_endings_top();
+	} else if (panel == PANEL_GUIDE) {
+		draw_guide_top();
 	} else if (ui_hidden) {
 		return;
 	} else if (waiting == PLAY_MENU) {
@@ -3400,6 +3735,26 @@ static const Button play_buttons[] = {
 	{14, 130, BOTTOM_W - 28, 38, "Auto  (Y)"},
 };
 #define AUTO_BUTTON 4
+#define COUNT_OF(array) (int)(sizeof(array) / sizeof((array)[0]))
+/* With a guide: Auto and Guide share the last row. */
+static const Button play_buttons_guide[] = {
+	{14, 34, (BOTTOM_W - 36) / 2, 42, "Menu  (X)"},
+	{22 + (BOTTOM_W - 36) / 2, 34, (BOTTOM_W - 36) / 2, 42, "Backlog  (L)"},
+	{14, 82, (BOTTOM_W - 36) / 2, 42, "Hide text  (B)"},
+	{22 + (BOTTOM_W - 36) / 2, 82, (BOTTOM_W - 36) / 2, 42, "Quit  (SELECT)"},
+	{14, 130, (BOTTOM_W - 36) / 2, 38, "Auto  (Y)"},
+	{22 + (BOTTOM_W - 36) / 2, 130, (BOTTOM_W - 36) / 2, 38, "Guide"},
+};
+
+static const Button *play_button_set(int *count)
+{
+	if (guide_file[0] != '\0') {
+		*count = COUNT_OF(play_buttons_guide);
+		return play_buttons_guide;
+	}
+	*count = COUNT_OF(play_buttons);
+	return play_buttons;
+}
 /* Slim strip along the bottom edge when the dialogue is shown on the bottom screen. */
 #define STRIP_Y 208.0f
 /* Bottom-screen choice buttons in the bottom-text layout: stacked in the area above
@@ -3425,7 +3780,6 @@ static const Button strip_buttons[] = {
 	{4 + 3 * (BOTTOM_W - 4) / 5, 208, (BOTTOM_W - 4) / 5 - 4, 28, "Quit"},
 	{4 + 4 * (BOTTOM_W - 4) / 5, 208, (BOTTOM_W - 4) / 5 - 4, 28, "Auto"},
 };
-#define COUNT_OF(array) (int)(sizeof(array) / sizeof((array)[0]))
 
 static void draw_button_box(const Button *button, int selected)
 {
@@ -3650,9 +4004,13 @@ static void draw_quit_confirm(void)
 static int touch_list_buttons(Button *out, const char *const *labels, int count, const char *extra)
 {
 	const float top = 34.0f, bottom = LIST_EXTRA_Y - 8.0f, gap = 5.0f;
-	float h = count > 0 ? fminf(34.0f, (bottom - top - gap * (float)(count - 1)) / (float)count) : 0.0f;
+	int columns = count > 6 ? 2 : 1;   /* long menus in two columns, so the buttons stay big */
+	int rows = (count + columns - 1) / columns;
+	float h = rows > 0 ? fminf(34.0f, (bottom - top - gap * (float)(rows - 1)) / (float)rows) : 0.0f;
+	float w = (BOTTOM_W - 40.0f - gap * (float)(columns - 1)) / (float)columns;
 	for (int index = 0; index < count; ++index) {
-		out[index] = (Button){20.0f, top + (float)index * (h + gap), BOTTOM_W - 40.0f, h, labels[index]};
+		int column = index % columns, row = index / columns;
+		out[index] = (Button){20.0f + (float)column * (w + gap), top + (float)row * (h + gap), w, h, labels[index]};
 	}
 	out[count] = (Button){20.0f, LIST_EXTRA_Y, BOTTOM_W - 40.0f, 30.0f, extra};
 	return count + 1;
@@ -3750,6 +4108,185 @@ static int menu_touch_labels(const char **labels)
 	return menu_count;
 }
 
+/* A straight stroke `thickness` wide (two triangles). */
+static void draw_stroke(float x0, float y0, float x1, float y1, float thickness, u32 color, float z)
+{
+	float dx = x1 - x0, dy = y1 - y0, length = sqrtf(dx * dx + dy * dy);
+	if (length <= 0.0f) return;
+	float nx = -dy / length * thickness * 0.5f, ny = dx / length * thickness * 0.5f;
+	C2D_DrawTriangle(x0 + nx, y0 + ny, color, x1 + nx, y1 + ny, color, x1 - nx, y1 - ny, color, z);
+	C2D_DrawTriangle(x0 + nx, y0 + ny, color, x1 - nx, y1 - ny, color, x0 - nx, y0 - ny, color, z);
+}
+
+/* Endings checklist; the same list on both screens (`width` wide from `x`). */
+#define ENDING_ROWS 8
+static void draw_endings_list(float x, float width, int touch)
+{
+	const u32 dim = C2D_Color32(150, 170, 165, 255);
+	int seen = 0;
+	for (int index = 0; index < ending_count; ++index) seen += ending_seen(&endings[index]);
+	draw_line(config.labels[LABEL_ENDINGS], x + 12, 6, 0.6f, theme_accent(), Z_OVERLAY_TEXT, width - 110);
+	char count[32];
+	snprintf(count, sizeof(count), "%d / %d", seen, ending_count);
+	draw_line(count, x + width - 70, 10, 0.45f, theme_text(), Z_OVERLAY_TEXT, 0.0f);
+	for (int row = 0; row < ENDING_ROWS && ending_top + row < ending_count; ++row) {
+		const Ending *ending = &endings[ending_top + row];
+		int done = ending_seen(ending);
+		float y = 36.0f + (float)row * 20.0f;
+		/* a check box: outline, filled with a tick when seen */
+		const u32 edge = done ? theme_accent() : dim;
+		rect(x + 14, y + 2, 13, 13, edge, Z_OVERLAY);
+		rect(x + 16, y + 4, 9, 9, done ? theme_accent() : C2D_Color32(12, 18, 22, 255), Z_OVERLAY + 0.01f);
+		if (done) {
+			const u32 tick = C2D_Color32(12, 18, 22, 255);
+			draw_stroke(x + 16.5f, y + 8.5f, x + 19.5f, y + 11.5f, 1.9f, tick, Z_OVERLAY + 0.02f);
+			draw_stroke(x + 19.5f, y + 11.5f, x + 25.0f, y + 4.5f, 1.9f, tick, Z_OVERLAY + 0.02f);
+		}
+		draw_line(ending->name, x + 34, y, 0.46f, done ? theme_text() : dim, Z_OVERLAY_TEXT, width - 56);
+	}
+	if (ending_count > ENDING_ROWS) {
+		char more[48];
+		snprintf(more, sizeof(more), "%d-%d of %d   D-pad / swipe to scroll", ending_top + 1,
+			ending_top + ENDING_ROWS < ending_count ? ending_top + ENDING_ROWS : ending_count, ending_count);
+		draw_line(more, x + 14, 36.0f + ENDING_ROWS * 20.0f + 2.0f, 0.38f, dim, Z_OVERLAY_TEXT, width - 28);
+	}
+	if (touch) {
+		draw_panel(IMG_ITEM, 20, LIST_EXTRA_Y, BOTTOM_W - 40, 30, theme_item(), Z_BOX);
+		draw_line("Back", 32, LIST_EXTRA_Y + 6, 0.5f, theme_text(), Z_TEXT, 0.0f);
+	} else {
+		draw_line("B back", x + 14, 224, 0.4f, dim, Z_OVERLAY_TEXT, 0.0f);
+	}
+}
+
+static void draw_endings_top(void)
+{
+	draw_backdrop(IMG_MENU_BG, 235);
+	rect(SCENE_X + 20.0f, 0, 360.0f, TOP_H, theme_panel(225), Z_OVERLAY - 0.01f);   /* calm behind the list */
+	draw_endings_list(SCENE_X + 30.0f, 340.0f, 0);
+}
+
+static void draw_guide(void)
+{
+	const u32 dim = C2D_Color32(150, 170, 165, 255);
+	const float line_h = GUIDE_LINE_H;
+	int first = (int)(guide_scroll / line_h);
+	float y = GUIDE_TOP + 2.0f - (guide_scroll - (float)first * line_h);
+	for (int index = first; index < guide_lines && y < GUIDE_BOTTOM; ++index, y += line_h) {
+		int length = guide_ends[index] - guide_starts[index];
+		if (length <= 0) continue;
+		char line[512];
+		if (length >= (int)sizeof(line)) length = (int)sizeof(line) - 1;
+		memcpy(line, guide_text + guide_starts[index], (size_t)length);
+		line[length] = '\0';
+		draw_line(line, 14, y, GUIDE_SCALE, theme_text(), Z_TEXT, 0.0f);
+	}
+	/* bars over the text that scrolls under them */
+	u32 bar = config.has_bg ? rgb_color(config.bg, 255) : C2D_Color32(17, 29, 34, 255);
+	rect(0, 0, BOTTOM_W, GUIDE_TOP, bar, Z_TEXT + 0.02f);
+	rect(0, GUIDE_BOTTOM, BOTTOM_W, TOP_H - GUIDE_BOTTOM, bar, Z_TEXT + 0.02f);
+	rect(0, GUIDE_TOP - 1.0f, BOTTOM_W, 1.0f, theme_accent(), Z_TEXT + 0.03f);
+	draw_line(config.labels[LABEL_GUIDE], 14, 3, 0.45f, theme_accent(), Z_TEXT + 0.04f, 0.0f);
+	char where[32];
+	float max = guide_max_scroll();
+	snprintf(where, sizeof(where), "%d%%", max > 0.0f ? (int)(guide_scroll * 100.0f / max + 0.5f) : 100);
+	draw_line(where, BOTTOM_W - 50, 4, 0.42f, dim, Z_TEXT + 0.04f, 0.0f);
+	/* scroll bar */
+	float track = GUIDE_BOTTOM - GUIDE_TOP - 4.0f;
+	float total = (float)guide_lines * line_h;
+	if (total > track) {
+		float thumb = fmaxf(12.0f, track * track / total);
+		float at = GUIDE_TOP + 2.0f + (track - thumb) * (max > 0.0f ? guide_scroll / max : 0.0f);
+		rect(BOTTOM_W - 6, at, 3, thumb, dim, Z_TEXT + 0.03f);
+	}
+	draw_line("Swipe or D-pad to scroll   B back", 14, GUIDE_BOTTOM + 12, 0.38f, dim, Z_TEXT + 0.04f, 0.0f);
+	draw_panel(IMG_ITEM, BOTTOM_W - 86, GUIDE_BOTTOM + 5, 72, 26, theme_item(), Z_TEXT + 0.03f);
+	draw_line("Back", BOTTOM_W - 72, GUIDE_BOTTOM + 9, 0.45f, theme_text(), Z_TEXT + 0.04f, 0.0f);
+}
+
+static void draw_guide_top(void)
+{
+	rect(SCENE_X, 0, 400, 17, theme_panel(255), Z_HEADER);
+	draw_line("Guide open on the touch screen", SCENE_X + 8, 1, 0.42f, theme_accent(), Z_HEADER_TEXT, 0.0f);
+}
+
+static void close_guide(void)
+{
+	guide_save_position();
+	guide_free();
+}
+
+static void guide_input(u32 down, u32 repeat)
+{
+	const float line_h = GUIDE_LINE_H, page = GUIDE_BOTTOM - GUIDE_TOP - line_h;
+	u32 held = hidKeysHeld();
+	touchPosition touch;
+	if (down & (KEY_B | KEY_X)) {
+		close_guide();
+		close_panel();
+		return;
+	}
+	if (repeat & KEY_DUP) { guide_scroll -= line_h * 2.0f; guide_velocity = 0.0f; }
+	if (repeat & KEY_DDOWN) { guide_scroll += line_h * 2.0f; guide_velocity = 0.0f; }
+	if (repeat & KEY_DLEFT) { guide_scroll -= page; guide_velocity = 0.0f; }
+	if (repeat & KEY_DRIGHT) { guide_scroll += page; guide_velocity = 0.0f; }
+	if (down & KEY_TOUCH) {
+		hidTouchRead(&touch);
+		if (touch.py >= GUIDE_BOTTOM && touch.px >= BOTTOM_W - 90) {
+			close_guide();
+			close_panel();
+			return;
+		}
+		guide_drag = 1;
+		guide_drag_moved = 0;
+		guide_drag_y = touch.py;
+		guide_velocity = 0.0f;
+	} else if (guide_drag && (held & KEY_TOUCH)) {
+		hidTouchRead(&touch);
+		float delta = (float)touch.py - guide_drag_y;
+		guide_scroll -= delta;            /* the text follows the finger */
+		guide_velocity = guide_velocity * 0.5f - delta * 0.5f;
+		guide_drag_y = touch.py;
+	} else {
+		guide_drag = 0;
+		guide_scroll += guide_velocity;   /* keeps gliding after a swipe, slowing down */
+		guide_velocity *= 0.92f;
+		if (fabsf(guide_velocity) < 0.3f) guide_velocity = 0.0f;
+	}
+	float max = guide_max_scroll();
+	if (guide_scroll < 0.0f) { guide_scroll = 0.0f; guide_velocity = 0.0f; }
+	if (guide_scroll > max) { guide_scroll = max; guide_velocity = 0.0f; }
+}
+
+static int ending_drag;
+static float ending_drag_y;
+
+static void endings_input(u32 down, u32 repeat)
+{
+	int last_top = ending_count > ENDING_ROWS ? ending_count - ENDING_ROWS : 0;
+	touchPosition touch;
+	if (down & (KEY_B | KEY_X)) {
+		close_panel();
+		return;
+	}
+	if ((repeat & KEY_DUP) && ending_top > 0) --ending_top;
+	if ((repeat & KEY_DDOWN) && ending_top < last_top) ++ending_top;
+	if (down & KEY_TOUCH) {
+		hidTouchRead(&touch);
+		if (touch.py >= LIST_EXTRA_Y) {
+			close_panel();
+			return;
+		}
+		ending_drag = 1;
+		ending_drag_y = touch.py;
+	} else if (ending_drag && (hidKeysHeld() & KEY_TOUCH)) {
+		hidTouchRead(&touch);
+		while ((float)touch.py - ending_drag_y >= 20.0f && ending_top > 0) { --ending_top; ending_drag_y += 20.0f; }
+		while ((float)touch.py - ending_drag_y <= -20.0f && ending_top < last_top) { ++ending_top; ending_drag_y -= 20.0f; }
+	} else {
+		ending_drag = 0;
+	}
+}
+
 static void draw_bottom(C3D_RenderTarget *target)
 {
 	C2D_TargetClear(target, config.has_bg ? rgb_color(config.bg, 255) : C2D_Color32(17, 29, 34, 255));
@@ -3783,6 +4320,14 @@ static void draw_bottom(C3D_RenderTarget *target)
 		draw_wrapped(message, 14, 34, BOTTOM_W - 28, 0.45f, white, Z_TEXT);
 		draw_line(extras_mode ? "B return to title" : "B back to list",
 			14, 224, 0.4f, dim, Z_TEXT, 0.0f);
+		return;
+	}
+	if (panel == PANEL_ENDINGS && (mode == MODE_TITLE || mode == MODE_PLAY)) {
+		draw_endings_list(0.0f, BOTTOM_W, 1);
+		return;
+	}
+	if (panel == PANEL_GUIDE && (mode == MODE_TITLE || mode == MODE_PLAY)) {
+		draw_guide();
 		return;
 	}
 	if (panel == PANEL_OPTIONS && (mode == MODE_TITLE || mode == MODE_PLAY)) {
@@ -3894,8 +4439,10 @@ static void draw_bottom(C3D_RenderTarget *target)
 		status_text(status, sizeof(status));
 		draw_line(status, 14, 208, 0.42f, theme_text(), Z_TEXT, 0.0f);
 	}
-	for (int index = 0; index < COUNT_OF(play_buttons); ++index) {
-		draw_button_box(&play_buttons[index], index == AUTO_BUTTON && auto_mode);
+	int button_count;
+	const Button *buttons = play_button_set(&button_count);
+	for (int index = 0; index < button_count; ++index) {
+		draw_button_box(&buttons[index], index == AUTO_BUTTON && auto_mode);
 	}
 	draw_line(waiting == PLAY_MENU ? "D-pad choose   A confirm" : "A next   Y auto   Hold R fast-forward",
 		14, 176, 0.42f, dim, Z_TEXT, 0.0f);
@@ -3936,10 +4483,11 @@ static void open_panel(Panel which)
 	if (which == PANEL_MENU) {
 		menu_count = 0;
 		static const int order[] = {LABEL_SAVE, LABEL_LOAD, LABEL_BACKLOG, LABEL_GLOSSARY,
-			LABEL_OPTIONS, LABEL_QUIT};
+			LABEL_ENDINGS, LABEL_GUIDE, LABEL_OPTIONS, LABEL_QUIT};
 		for (int i = 0; i < LABEL_COUNT; ++i) {
 			int item = order[i];
-			if (item == LABEL_GLOSSARY && glossary.count == 0) {
+			if ((item == LABEL_GLOSSARY && glossary.count == 0) || (item == LABEL_ENDINGS && ending_count == 0)
+				|| (item == LABEL_GUIDE && guide_file[0] == '\0')) {
 				continue;
 			}
 			menu_items[menu_count++] = item;
@@ -3947,6 +4495,14 @@ static void open_panel(Panel which)
 		menu_cursor_item = 0;
 	} else if (which == PANEL_BACKLOG) {
 		backlog_view = 0;
+	} else if (which == PANEL_ENDINGS) {
+		ending_top = 0;
+	} else if (which == PANEL_GUIDE) {
+		guide_drag = 0;
+		if (!guide_load()) {
+			panel = panel_return;
+			panel_return = PANEL_NONE;
+		}
 	} else if (which == PANEL_SAVE || which == PANEL_LOAD) {
 		refresh_slots();
 		panel_cursor = last_slot;
@@ -3976,6 +4532,8 @@ static void choose_menu_item(int index)
 	case LABEL_BACKLOG: open_panel(PANEL_BACKLOG); break;
 	case LABEL_GLOSSARY: open_panel(PANEL_GLOSSARY); break;
 	case LABEL_OPTIONS: open_panel(PANEL_OPTIONS); break;
+	case LABEL_ENDINGS: open_panel(PANEL_ENDINGS); break;
+	case LABEL_GUIDE: open_panel(PANEL_GUIDE); break;
 	default: open_panel(PANEL_QUIT); break;
 	}
 }
@@ -3988,6 +4546,12 @@ static void choose_title_item(void)
 		break;
 	case TITLE_LOAD:
 		open_panel(PANEL_LOAD);
+		break;
+	case TITLE_ENDINGS:
+		open_panel(PANEL_ENDINGS);
+		break;
+	case TITLE_GUIDE:
+		open_panel(PANEL_GUIDE);
 		break;
 	case TITLE_OPTIONS:
 		open_panel(PANEL_OPTIONS);
@@ -4096,6 +4660,12 @@ static void handle_panel_input(u32 down, u32 repeat)
 		}
 		break;
 	}
+	case PANEL_ENDINGS:
+		endings_input(down, repeat);
+		break;
+	case PANEL_GUIDE:
+		guide_input(down, repeat);
+		break;
 	case PANEL_GLOSSARY: {
 		if (down & (KEY_B | KEY_X)) {
 			if (gloss_detail) {
@@ -4308,10 +4878,12 @@ static void handle_play_input(u32 down, u32 held, float dt)
 	if (down & KEY_TOUCH) {
 		touchPosition touch;
 		hidTouchRead(&touch);
-		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT, PANEL_NONE};
+		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT, PANEL_NONE, PANEL_GUIDE};
+		int button_count;
+		const Button *buttons = play_button_set(&button_count);
 		int button = touch_layout_active() ? hit_button(strip_buttons, COUNT_OF(strip_buttons), &touch)
 			: waiting == PLAY_MENU && !ui_hidden && event.choice_count > 0 ? -1   /* choices own the screen */
-			: hit_button(play_buttons, COUNT_OF(play_buttons), &touch);
+			: hit_button(buttons, button_count, &touch);
 		if (button == 2) {
 			ui_hidden = !ui_hidden;
 			return;

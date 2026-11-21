@@ -315,6 +315,31 @@ blocks. Words are separated by spaces; text containing spaces goes in
     if g_good_end == 1
       choice "Epilogue"
     end
+  When the story ends ("stop", or a "return" with nothing to return to) 3DVN
+  sets g_end_<chapter> = 1 itself, where <chapter> is the script file the
+  story ended in (g_end_main, or g_end_gm04 for ch/gm04.3vs).
+
+  Endings checklist: list a game's endings in endings.txt in the game folder
+  (or games/<game>.endings.txt next to it, which wins), one per line:
+      # comment
+      Sora - good ending = g_0a g_10
+      Kanon - bad end = g_end_gk07
+  An ending is ticked when any global after "=" is non-zero. With a list,
+  "Endings" appears on the title menu and in the game menu.
+
+  Guide: a text file games/<game>.txt (the game's folder or archive name, or
+  its title) adds a "Guide" button to the bottom screen while playing and to
+  the game menu. It is read on the bottom screen: swipe or D-pad to scroll
+  (left/right a page); it reopens where you left off
+  (settings/<game>.3vguide). UTF-8 or Latin-1 text; lines wrapped at ~72
+  columns are rejoined to fit.
+
+  Playtime: settings/<game>.3vtime, counted only while the story is on screen
+  with no menu open and not after 90 seconds without input or a new line.
+  Shown on the bottom screen with the time of day.
+
+  Saves from another version of a game (its scripts changed) load at the same
+  line of dialogue in the new scripts, if that line still exists.
 
 6.7 Conditions and loops
     if EXPRESSION

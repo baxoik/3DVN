@@ -1620,7 +1620,10 @@ void gs_next(const GsProgram *program, GsState *state, GsEvent *event)
 			break;
 		case OP_RET:
 			if (state->call_depth == 0) {
-				runtime_error(event, instr->line, "'return' with no active call");
+				/* nothing to return to: the story ends here, as with "stop" (some
+				   converted endings finish with a return) */
+				event->type = GS_EV_END;
+				state->pc = program->code_count;
 				return;
 			}
 			state->pc = state->call_stack[--state->call_depth];

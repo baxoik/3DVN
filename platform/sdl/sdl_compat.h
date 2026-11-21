@@ -134,6 +134,7 @@ void C3D_FrameEnd(u8 flags);
 bool C2D_DrawImageAt(C2D_Image image, float x, float y, float depth, const C2D_ImageTint *tint,
 	float scale_x, float scale_y);
 bool C2D_DrawRectangle(float x, float y, float z, float w, float h, u32 c0, u32 c1, u32 c2, u32 c3);
+bool C2D_DrawTriangle(float x0, float y0, u32 c0, float x1, float y1, u32 c1, float x2, float y2, u32 c2, float z);
 
 /* ---------- text ---------- */
 typedef struct C2D_Font_s *C2D_Font;
