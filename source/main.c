@@ -238,6 +238,10 @@ static int backlog_view;
 static unsigned script_hash;
 static Backlog backlog;
 static WrapLayout log_layout[BACKLOG_MAX];
+/* The voice clip that played with each backlog line (kept outside saves: after loading,
+   earlier lines have none). */
+static char log_voice[BACKLOG_MAX][GS_STR_LEN];
+static char pending_voice[GS_STR_LEN];   /* last voice started since the previous line */
 static SlotInfo slots[SAVE_SLOTS];
 static C2D_TextBuf measure_buf;
 static GameConfig config;
@@ -939,6 +943,9 @@ static void play_audio_event(const GsEvent *e, int is_music)
 		audio_stop_sfx();
 		return;
 	}
+	if (!is_music && !strncmp(e->asset, "v/", 2)) {
+		snprintf(pending_voice, sizeof(pending_voice), "%s", e->asset);   /* for the backlog */
+	}
 	if (!is_music && fast_forward && !strncmp(e->asset, "v/", 2)) {
 		/* Voices are cut by the next line anyway while fast-forwarding; loading each
 		   one made fast-forward stutter on Wii U. Other sounds (ambience) still play. */
@@ -1092,6 +1099,8 @@ static void backlog_push(const char *speaker, unsigned color, const char *text)
 	snprintf(entry->text, sizeof(entry->text), "%s", text);
 	entry->color = color;
 	log_layout[slot].count = 0;
+	snprintf(log_voice[slot], sizeof(log_voice[slot]), "%s", pending_voice);
+	pending_voice[0] = '\0';
 }
 
 static const WrapLayout *backlog_layout(int slot)
@@ -1553,6 +1562,7 @@ static int load_slot(int slot)
 	backlog = data->backlog;
 	nvl_page = loaded_page;
 	memset(log_layout, 0, sizeof(log_layout));
+	memset(log_voice, 0, sizeof(log_voice));
 	free(data);
 
 	audio_stop_music(0.0f);
@@ -1761,6 +1771,7 @@ static void start_game(const char *name)
 	gs_state_init(program, &state);
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
+	memset(log_voice, 0, sizeof(log_voice));
 	memset(&event, 0, sizeof(event));
 	panel = PANEL_NONE;
 	panel_return = PANEL_NONE;
@@ -1786,6 +1797,7 @@ static void begin_game(void)
 	globals_apply();
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
+	memset(log_voice, 0, sizeof(log_voice));
 	memset(&event, 0, sizeof(event));
 	panel = PANEL_NONE;
 	panel_return = PANEL_NONE;
@@ -2794,6 +2806,111 @@ static void draw_backlog(void)
 		Z_HEADER_TEXT, 0.0f);
 }
 
+/* Backlog on the bottom screen: newest line at the bottom, swipe to scroll, tap a line to
+   hear its voice again. Rows show the speaker and the start of the line. */
+#define LOG_ROWS 5
+#define LOG_ROW_H 36.0f
+#define LOG_TOP 24.0f
+static int log_drag, log_drag_moved;   /* touch drag state */
+static float log_drag_y;
+
+static int backlog_row_age(int row)   /* row 0 is the top one */
+{
+	return backlog_view + (LOG_ROWS - 1 - row);
+}
+
+static void scroll_backlog(int direction);
+
+static void draw_backlog_touch(void)
+{
+	const u32 dim = C2D_Color32(150, 170, 165, 255);
+	draw_line("Backlog", 14, 4, 0.5f, theme_accent(), Z_TEXT, 0.0f);
+	char where[32];
+	snprintf(where, sizeof(where), "%d / %d", backlog.count - backlog_view, backlog.count);
+	draw_line(where, BOTTOM_W - 70, 6, 0.4f, dim, Z_TEXT, 0.0f);
+	for (int row = 0; row < LOG_ROWS; ++row) {
+		int age = backlog_row_age(row);
+		if (age < 0 || age >= backlog.count) continue;
+		int slot = backlog_slot(age);
+		const BacklogEntry *entry = &backlog.entries[slot];
+		float y = LOG_TOP + row * LOG_ROW_H;
+		int voiced = log_voice[slot][0] != '\0';
+		rect(8, y, BOTTOM_W - 16, LOG_ROW_H - 4, theme_item(), Z_BOX);
+		float text_w = BOTTOM_W - (voiced ? 76.0f : 32.0f);
+		if (entry->speaker[0]) {
+			draw_line(entry->speaker, 14, y + 1, 0.36f, speaker_color(entry->color), Z_TEXT, text_w);
+		}
+		/* the start of the line, cut to fit */
+		char shown[GS_TEXT_LEN];
+		const char *text = entry->text;
+		while (*text == '\n' || *text == ' ') ++text;
+		snprintf(shown, sizeof(shown), "%s", text);
+		for (char *c = shown; *c; ++c) if (*c == '\n') *c = ' ';
+		float previous = measure_scale;
+		measure_scale = 0.4f;
+		size_t length = strlen(shown);
+		while (length > 0 && measure_text(shown, length, NULL) > text_w) {
+			do --length; while (length > 0 && ((unsigned char)shown[length] & 0xC0) == 0x80);
+		}
+		measure_scale = previous;
+		if (length < strlen(shown) && length > 3) strcpy(shown + length - 3, "...");
+		draw_line(shown, 14, y + (entry->speaker[0] ? 15.0f : 8.0f), 0.4f, theme_text(), Z_TEXT, 0.0f);
+		if (voiced) {
+			rect(BOTTOM_W - 58, y + 6, 44, LOG_ROW_H - 16, theme_accent(), Z_BOX + 0.01f);
+			draw_line("Play", BOTTOM_W - 50, y + 8, 0.4f, theme_dark_text(), Z_TEXT, 0.0f);
+		}
+	}
+	draw_line("Swipe to scroll   Tap a line: voice   B close", 14, 214, 0.38f, dim, Z_TEXT, BOTTOM_W - 28);
+}
+
+static void backlog_touch_input(u32 down, u32 held)
+{
+	touchPosition touch;
+	if (down & KEY_TOUCH) {
+		hidTouchRead(&touch);
+		log_drag = 1;
+		log_drag_moved = 0;
+		log_drag_y = touch.py;
+		return;
+	}
+	if (log_drag && (held & KEY_TOUCH)) {
+		hidTouchRead(&touch);
+		float delta = (float)touch.py - log_drag_y;
+		/* dragging down shows older lines, like scrolling a list */
+		while (delta >= LOG_ROW_H * 0.6f) {
+			scroll_backlog(1);
+			log_drag_y += LOG_ROW_H * 0.6f;
+			delta -= LOG_ROW_H * 0.6f;
+			log_drag_moved = 1;
+		}
+		while (delta <= -LOG_ROW_H * 0.6f) {
+			scroll_backlog(-1);
+			log_drag_y -= LOG_ROW_H * 0.6f;
+			delta += LOG_ROW_H * 0.6f;
+			log_drag_moved = 1;
+		}
+		if (delta > 6.0f || delta < -6.0f) log_drag_moved = 1;
+		return;
+	}
+	if (log_drag && !(held & KEY_TOUCH)) {   /* released */
+		log_drag = 0;
+		if (!log_drag_moved && log_drag_y >= LOG_TOP) {
+			int row = (int)((log_drag_y - LOG_TOP) / LOG_ROW_H);
+			int age = backlog_row_age(row);
+			if (row >= 0 && row < LOG_ROWS && age >= 0 && age < backlog.count) {
+				const char *voice = log_voice[backlog_slot(age)];
+				if (voice[0]) {
+					GsEvent replay;
+					memset(&replay, 0, sizeof(replay));
+					snprintf(replay.asset, sizeof(replay.asset), "%s", voice);
+					audio_stop_sfx();
+					play_audio_event(&replay, 0);
+				}
+			}
+		}
+	}
+}
+
 static void draw_game_menu(void)
 {
 	draw_backdrop(IMG_MENU_BG, 225);
@@ -3672,6 +3789,10 @@ static void draw_bottom(C3D_RenderTarget *target)
 			menu_cursor_item, "Close");
 		return;
 	}
+	if (panel == PANEL_BACKLOG) {
+		draw_backlog_touch();
+		return;
+	}
 	if (panel == PANEL_SAVE || panel == PANEL_LOAD) {
 		const char *labels[SLOT_VISIBLE];
 		int count = slot_touch_labels(labels);
@@ -3998,6 +4119,7 @@ static void handle_panel_input(u32 down, u32 repeat)
 		if (repeat & KEY_DLEFT) {
 			scroll_backlog(5);
 		}
+		backlog_touch_input(down, hidKeysHeld());
 		if (down & (KEY_B | KEY_L)) {
 			close_panel();
 		}
