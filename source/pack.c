@@ -235,6 +235,42 @@ unsigned char *vn_read_whole(const char *path, size_t *size, int *handled)
 	return data;
 }
 
+int pack_peek_member(const char *archive_path, const char *member, char *out, size_t out_size)
+{
+	/* make_pack.py stores a game's top-level files first, so game.3vc is found after a few
+	   local headers; reading the whole central directory would be slow on consoles. */
+	FILE *file = fopen(archive_path, "rb");
+	if (file == NULL || out_size == 0) {
+		if (file != NULL) fclose(file);
+		return -1;
+	}
+	long offset = 0;
+	int result = -1;
+	size_t member_length = strlen(member);
+	for (int entry = 0; entry < 64; ++entry) {
+		unsigned char head[30];
+		if (fseek(file, offset, SEEK_SET) != 0 || fread(head, 1, 30, file) != 30
+			|| le32(head) != 0x04034b50) break;
+		uint32_t size = le32(head + 18);
+		uint16_t name_length = le16(head + 26), extra_length = le16(head + 28);
+		char name[256];
+		if (name_length >= sizeof(name) || fread(name, 1, name_length, file) != name_length) break;
+		name[name_length] = '\0';
+		if (name_length == member_length && !memcmp(name, member, member_length) && le16(head + 8) == 0) {
+			size_t want = size < out_size - 1 ? size : out_size - 1;
+			if (fseek(file, offset + 30 + name_length + extra_length, SEEK_SET) == 0
+				&& fread(out, 1, want, file) == want) {
+				out[want] = '\0';
+				result = (int)want;
+			}
+			break;
+		}
+		offset += 30L + name_length + extra_length + (long)size;
+	}
+	fclose(file);
+	return result;
+}
+
 int vn_exists(const char *path)
 {
 	struct stat info;

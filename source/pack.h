@@ -21,6 +21,9 @@ int pack_active(void);
 FILE *vn_fopen(const char *path, const char *mode);
 /* 1 if the game file exists (in the archive or on disk). */
 int vn_exists(const char *path);
+/* Reads a small stored file (e.g. "game.3vc") from near the start of a .3vp archive without
+   opening it as the current game. Returns its length (NUL-terminated in out), or -1. */
+int pack_peek_member(const char *archive_path, const char *member, char *out, size_t out_size);
 /* Reads a whole file from the open archive with a single read (stdio would split it into
    small buffered reads, each seeking the archive). Sets *handled to 0 when the path is not
    the archive's to answer (no archive, or a loose override file): use vn_fopen then.

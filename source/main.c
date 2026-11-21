@@ -161,6 +161,7 @@ typedef enum {
 } Wait;
 
 static char game_names[MAX_GAMES][64];
+static char game_titles[MAX_GAMES][64];   /* "title" from each game's game.3vc, or empty */
 static int game_count;
 static char game_dir[160];
 static char game_name[64];
@@ -956,6 +957,35 @@ static void scan_games(void)
 		}
 	}
 	closedir(dir);
+	/* Titles for the list: game.3vc in the folder, else in the archive. */
+	for (int i = 0; i < game_count; ++i) {
+		char config_text[2048], path[320];
+		int length = -1;
+		snprintf(path, sizeof(path), GAMES_DIR "/%s/game.3vc", game_names[i]);
+		FILE *file = fopen(path, "rb");
+		if (file != NULL) {
+			length = (int)fread(config_text, 1, sizeof(config_text) - 1, file);
+			config_text[length > 0 ? length : 0] = '\0';
+			fclose(file);
+		} else {
+			snprintf(path, sizeof(path), GAMES_DIR "/%s" PACK_SUFFIX, game_names[i]);
+			length = pack_peek_member(path, "game.3vc", config_text, sizeof(config_text));
+		}
+		game_titles[i][0] = '\0';
+		for (char *line = length > 0 ? config_text : NULL; line != NULL && *line; ) {
+			char *next = strchr(line, '\n');
+			if (next != NULL) *next++ = '\0';
+			if (!strncmp(line, "title", 5) && (line[5] == ' ' || line[5] == '\t')) {
+				char *value = line + 6;
+				while (*value == ' ' || *value == '\t') ++value;
+				size_t end = strlen(value);
+				while (end > 0 && (value[end - 1] == '\r' || value[end - 1] == ' ')) value[--end] = '\0';
+				snprintf(game_titles[i], sizeof(game_titles[0]), "%s", value);
+				break;
+			}
+			line = next;
+		}
+	}
 }
 
 /* ---------- backlog ---------- */
@@ -2053,6 +2083,8 @@ static void draw_panel(int image, float x, float y, float w, float h, u32 color,
 /* The first `visible` bytes of `full`, with a line break wherever the whole text wraps, so a
    word being typed out does not start at the end of one line and jump to the next once it no
    longer fits. Lines are measured with 2 px to spare so the renderer keeps these breaks. */
+#define REWRAP_SLACK 1.2f
+
 static void reveal_with_breaks(const char *full, size_t visible, float width, float scale,
 	char *out, size_t size)
 {
@@ -2478,11 +2510,15 @@ static void draw_textbox(void)
 	reveal_with_breaks(full, visible, width, scale, shown, sizeof(shown));
 	const char *visible_text = shown;
 	Picture *advance = advance_available ? ui_image(IMG_ADVANCE) : NULL;
+	/* The lines are already broken (reveal_with_breaks); give the renderer room so it never
+	   wraps again: fonts render slightly wider at some sizes (Wii U), which pushed an extra
+	   line out of the bottom of the box. */
+	float draw_width = width * REWRAP_SLACK;
 	if (advance != NULL) {
-		draw_dialogue_with_advance(visible_text, bx + text_x, by + text_y, width, scale, color,
+		draw_dialogue_with_advance(visible_text, bx + text_x, by + text_y, draw_width, scale, color,
 			advance, event.text[length] == '\0');
 	} else {
-		draw_wrapped(visible_text, bx + text_x, by + text_y, width, scale, color, Z_TEXT);
+		draw_wrapped(visible_text, bx + text_x, by + text_y, draw_width, scale, color, Z_TEXT);
 	}
 }
 
@@ -2640,7 +2676,8 @@ static void draw_options(void)
 	rect(364, 46, 3, track, C2D_Color32(255, 255, 255, 40), Z_OVERLAY);
 	rect(364, 46 + track * (float)first / OPTION_ROWS, 3, track * OPTION_VISIBLE / OPTION_ROWS,
 		theme_accent(), Z_OVERLAY + 0.001f);
-	draw_line("A / Left / Right change   B back", 40, 213, 0.4f,
+	draw_line(first + OPTION_VISIBLE < OPTION_ROWS ? "A / Left / Right change   B back   Down: more"
+		: "A / Left / Right change   B back", 40, 213, 0.4f,
 		C2D_Color32(150, 170, 165, 255), Z_OVERLAY_TEXT, 0.0f);
 }
 
@@ -3133,11 +3170,12 @@ static void draw_bottom_dialogue(void)
 	reveal_with_breaks(full, visible, width, scale, shown, sizeof(shown));
 	const char *visible_text = shown;
 	Picture *advance = advance_available ? ui_image(IMG_ADVANCE) : NULL;
+	float draw_width = width * REWRAP_SLACK;   /* see draw_textbox */
 	if (advance != NULL) {
-		draw_dialogue_with_advance(visible_text, text_x, text_y, width, scale, color,
+		draw_dialogue_with_advance(visible_text, text_x, text_y, draw_width, scale, color,
 			advance, event.text[length] == '\0');
 	} else {
-		draw_wrapped(visible_text, text_x, text_y, width, scale, color, Z_TEXT);
+		draw_wrapped(visible_text, text_x, text_y, draw_width, scale, color, Z_TEXT);
 	}
 }
 
@@ -3158,6 +3196,27 @@ static void draw_list_row(float y, const char *label, int selected)
 		Z_OVERLAY_TEXT, TOP_W - 96);
 }
 
+/* "N   MM-DD HH:MM   preview" for a save slot, or "N   - empty -". */
+static void slot_label(int slot, char *label, size_t size, size_t preview_chars)
+{
+	if (slots[slot].used) {
+		char when[24] = "";
+		time_t saved = (time_t)slots[slot].saved_at;
+		struct tm *parts = localtime(&saved);
+		if (parts != NULL) {
+			strftime(when, sizeof(when), "%m-%d %H:%M", parts);
+		}
+		char preview[96];
+		size_t length = utf8_prefix(slots[slot].preview, preview_chars);
+		if (length >= sizeof(preview)) length = sizeof(preview) - 1;
+		memcpy(preview, slots[slot].preview, length);
+		preview[length] = '\0';
+		snprintf(label, size, "%d   %s   %s", slot + 1, when, preview);
+	} else {
+		snprintf(label, size, "%d   - empty -", slot + 1);
+	}
+}
+
 static void draw_slot_list(void)
 {
 	draw_backdrop(IMG_MENU_BG, 225);
@@ -3166,21 +3225,7 @@ static void draw_slot_list(void)
 	int first = list_first(panel_cursor, SAVE_SLOTS);
 	for (int slot = first; slot < first + LIST_ROWS; ++slot) {
 		char label[160];
-		if (slots[slot].used) {
-			char when[24] = "";
-			time_t saved = (time_t)slots[slot].saved_at;
-			struct tm *parts = localtime(&saved);
-			if (parts != NULL) {
-				strftime(when, sizeof(when), "%m-%d %H:%M", parts);
-			}
-			char preview[96];
-			size_t length = utf8_prefix(slots[slot].preview, 30);
-			memcpy(preview, slots[slot].preview, length);
-			preview[length] = '\0';
-			snprintf(label, sizeof(label), "%d   %s   %s", slot + 1, when, preview);
-		} else {
-			snprintf(label, sizeof(label), "%d   - empty -", slot + 1);
-		}
+		slot_label(slot, label, sizeof(label), 30);
 		draw_list_row(30.0f + (float)(slot - first) * 25.0f, label, slot == panel_cursor);
 	}
 	char footer[48];
@@ -3241,6 +3286,40 @@ static int title_touch_labels(const char **labels)
 	return title_count;
 }
 
+#define SLOT_VISIBLE 6
+static int slot_top;   /* first save slot shown on the bottom screen; follows the cursor */
+
+static int slot_first(void)
+{
+	if (panel_cursor < slot_top) slot_top = panel_cursor;
+	if (panel_cursor >= slot_top + SLOT_VISIBLE) slot_top = panel_cursor - SLOT_VISIBLE + 1;
+	if (slot_top > SAVE_SLOTS - SLOT_VISIBLE) slot_top = SAVE_SLOTS - SLOT_VISIBLE;
+	if (slot_top < 0) slot_top = 0;
+	return slot_top;
+}
+
+/* Bottom-screen buttons for the save slots in view. */
+static int slot_touch_labels(const char **labels)
+{
+	static char rows[SLOT_VISIBLE][160];
+	int first = slot_first();
+	for (int i = 0; i < SLOT_VISIBLE; ++i) {
+		slot_label(first + i, rows[i], sizeof(rows[i]), 18);
+		labels[i] = rows[i];
+	}
+	return SLOT_VISIBLE;
+}
+
+/* A thin scrollbar along the right edge of a bottom-screen touch list. */
+static void draw_touch_scrollbar(int first, int visible, int total)
+{
+	if (total <= visible) return;
+	const float top = 34.0f, height = LIST_EXTRA_Y - 8.0f - top;
+	rect(BOTTOM_W - 12.0f, top, 3.0f, height, C2D_Color32(255, 255, 255, 40), Z_TEXT);
+	rect(BOTTOM_W - 12.0f, top + height * (float)first / (float)total, 3.0f,
+		height * (float)visible / (float)total, theme_accent(), Z_TEXT + 0.001f);
+}
+
 /* Bottom-screen buttons for the Options rows in view (same window as the top screen). */
 static int option_touch_labels(const char **labels)
 {
@@ -3286,7 +3365,8 @@ static void draw_bottom(C3D_RenderTarget *target)
 		for (int index = first; index < game_count && index < first + 7; ++index) {
 			rect(14, 30.0f + (float)(index - first) * 28.0f, BOTTOM_W - 28, 24,
 				index == select_cursor ? COLOR_ACCENT : C2D_Color32(40, 62, 66, 255), Z_BOX);
-			draw_line(game_names[index], 22, 33.0f + (float)(index - first) * 28.0f, 0.45f,
+			draw_line(game_titles[index][0] ? game_titles[index] : game_names[index], 22,
+				33.0f + (float)(index - first) * 28.0f, 0.45f,
 				index == select_cursor ? C2D_Color32(10, 16, 18, 255) : C2D_Color32(220, 230, 225, 255),
 				Z_TEXT, BOTTOM_W - 44);
 		}
@@ -3306,6 +3386,7 @@ static void draw_bottom(C3D_RenderTarget *target)
 		/* The header doubles as the place for "Options saved" etc., so nothing overlaps the rows. */
 		draw_touch_list(notice[0] != '\0' ? notice : "Options  (tap to change)", labels, count,
 			panel_cursor - option_first(), "Back");
+		draw_touch_scrollbar(option_first(), OPTION_VISIBLE, OPTION_ROWS);
 		return;
 	}
 	if (panel == PANEL_QUIT && mode == MODE_PLAY) {
@@ -3358,6 +3439,14 @@ static void draw_bottom(C3D_RenderTarget *target)
 		int count = menu_touch_labels(labels);
 		draw_touch_list(config.menu_title[0] != '\0' ? config.menu_title : "Menu", labels, count,
 			menu_cursor_item, "Close");
+		return;
+	}
+	if (panel == PANEL_SAVE || panel == PANEL_LOAD) {
+		const char *labels[SLOT_VISIBLE];
+		int count = slot_touch_labels(labels);
+		draw_touch_list(notice[0] != '\0' ? notice : panel == PANEL_SAVE ? "Save to which slot?" : "Load which slot?",
+			labels, count, panel_cursor - slot_first(), "Back");
+		draw_touch_scrollbar(slot_first(), SLOT_VISIBLE, SAVE_SLOTS);
 		return;
 	}
 	if (panel != PANEL_NONE) {
@@ -3697,6 +3786,19 @@ static void handle_panel_input(u32 down, u32 repeat)
 		}
 		if (down & KEY_A) {
 			confirm_slot();
+		} else if (down & KEY_TOUCH) {
+			touchPosition touch;
+			hidTouchRead(&touch);
+			const char *labels[SLOT_VISIBLE];
+			Button buttons[SLOT_VISIBLE + 1];
+			int count = slot_touch_labels(labels);
+			int hit = hit_button(buttons, touch_list_buttons(buttons, labels, count, "Back"), &touch);
+			if (hit >= 0 && hit < count) {
+				panel_cursor = slot_first() + hit;
+				confirm_slot();
+			} else if (hit == count) {
+				close_panel();
+			}
 		}
 		break;
 	}
