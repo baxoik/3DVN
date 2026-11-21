@@ -32,7 +32,7 @@ void display_options_defaults(DisplayOptions *options)
 	options->master_volume = 10;
 	options->music_volume = 10;
 	options->voice_volume = 10;
-	options->tv_stretch = false;
+	options->tv_wide = false;
 }
 
 bool display_options_use_custom(const DisplayOptions *options, bool available)
@@ -158,9 +158,9 @@ DisplayOptionsResult display_options_load(const char *path, DisplayOptions *opti
 			|| strcmp(data + start, "touch_choices=1") == 0)) {
 			parsed.touch_choices = data[start + 14] == '1';
 			seen_touch = 1;
-		} else if (!seen_stretch && (strcmp(data + start, "tv_stretch=0") == 0
-			|| strcmp(data + start, "tv_stretch=1") == 0)) {
-			parsed.tv_stretch = data[start + 11] == '1';
+		} else if (!seen_stretch && (strcmp(data + start, "tv_wide=0") == 0
+			|| strcmp(data + start, "tv_wide=1") == 0)) {
+			parsed.tv_wide = data[start + 8] == '1';
 			seen_stretch = 1;
 		} else if (parse_volume(data + start, seen_volume, &parsed)) {
 			/* master_volume / music_volume / voice_volume = 0..10 */
@@ -204,11 +204,11 @@ DisplayOptionsResult display_options_save(const char *path, const DisplayOptions
 		return DISPLAY_OPTIONS_IO_ERROR;
 	}
 	failed = fprintf(file, "custom_textbox=%d\nnvl=%d\nbottom_text=%d\ntext_speed=%d\nauto_speed=%d\nskip_read=%d\ntouch_choices=%d\n"
-		"master_volume=%d\nmusic_volume=%d\nvoice_volume=%d\ntv_stretch=%d\n",
+		"master_volume=%d\nmusic_volume=%d\nvoice_volume=%d\ntv_wide=%d\n",
 		options->custom_textbox ? 1 : 0, options->nvl ? 1 : 0, options->bottom_text ? 1 : 0,
 		options->text_speed, options->auto_speed, options->skip_read ? 1 : 0,
 		options->touch_choices ? 1 : 0, options->master_volume, options->music_volume,
-		options->voice_volume, options->tv_stretch ? 1 : 0) < 0;
+		options->voice_volume, options->tv_wide ? 1 : 0) < 0;
 	if (fclose(file) != 0)
 		failed = 1;
 	if (!failed) {

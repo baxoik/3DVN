@@ -63,9 +63,6 @@ static float TOP_SCALE = 3.0f;      /* 1200x720 on a 720p TV; 4.5 (1800x1080) on
 static float TOP_SCALE = 2.0f, BOTTOM_SCALE = 2.0f;
 #endif
 
-#ifdef __WIIU__
-static int tv_stretch;
-#endif
 
 static void place_targets(void)
 {
@@ -73,11 +70,10 @@ static void place_targets(void)
 	for (int i = 0; i < 2; ++i) {
 		Output *out = &outputs[targets[i].output];
 		int w = (int)(targets[i].logical_w * targets[i].scale), h = (int)(targets[i].logical_h * targets[i].scale);
-		if (i == GFX_TOP && tv_stretch) w = out->width;   /* full TV width (about 7% wider) */
 		targets[i].place = (SDL_Rect){(out->width - w) / 2, (out->height - h) / 2, w, h};
 	}
 #else
-	int top_w = (int)(TOP_W * TOP_SCALE), top_h = (int)(TOP_H * TOP_SCALE);
+	int top_w = (int)(targets[GFX_TOP].logical_w * TOP_SCALE), top_h = (int)(TOP_H * TOP_SCALE);
 	int bottom_w = (int)(BOTTOM_W * BOTTOM_SCALE), bottom_h = (int)(BOTTOM_H * BOTTOM_SCALE);
 	targets[GFX_TOP].place = (SDL_Rect){0, 0, top_w, top_h};
 	targets[GFX_BOTTOM].place = (SDL_Rect){(top_w - bottom_w) / 2, top_h, bottom_w, bottom_h};
@@ -159,11 +155,12 @@ void gfxInitDefault(void)
 	if (scale != NULL && atof(scale) >= 1.0) {
 		TOP_SCALE = BOTTOM_SCALE = (float)atof(scale);
 	}
-	int width = (int)(TOP_W * TOP_SCALE), height = (int)((TOP_H + BOTTOM_H) * TOP_SCALE);
+	int top_logical = getenv("VN_WIDE") != NULL ? 427 : TOP_W;   /* test the Wii U wide TV layout */
+	int width = (int)(top_logical * TOP_SCALE), height = (int)((TOP_H + BOTTOM_H) * TOP_SCALE);
 	outputs[0].window = SDL_CreateWindow("3DVN", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
 		width, height, 0);
 	output_count = 1;
-	targets[GFX_TOP] = (C3D_RenderTarget){GFX_TOP, 0, TOP_SCALE, TOP_W, TOP_H, NULL, {0}, 0};
+	targets[GFX_TOP] = (C3D_RenderTarget){GFX_TOP, 0, TOP_SCALE, top_logical, TOP_H, NULL, {0}, 0};
 	targets[GFX_BOTTOM] = (C3D_RenderTarget){GFX_BOTTOM, 0, BOTTOM_SCALE, BOTTOM_W, BOTTOM_H, NULL, {0}, 0};
 #endif
 	for (int i = 0; i < output_count; ++i) {
@@ -1090,10 +1087,22 @@ int vn_wiiu_exit_to_hbl(void)
 	return launch != NULL && path != NULL && launch(path) == 0 ? 1 : 0;
 }
 
-void vn_wiiu_set_tv_stretch(int on)
+int vn_wiiu_set_tv_wide(int on)
 {
-	tv_stretch = on != 0;
-	if (outputs[0].window != NULL) place_targets();
+	int width = on ? 427 : TOP_W;   /* 427 x 240 is 16:9 */
+	C3D_RenderTarget *t = &targets[GFX_TOP];
+	if (t->logical_w != width && outputs[0].renderer != NULL) {
+		SDL_Texture *texture = SDL_CreateTexture(outputs[t->output].renderer, SDL_PIXELFORMAT_RGBA32,
+			SDL_TEXTUREACCESS_TARGET, (int)(width * t->scale), (int)(t->logical_h * t->scale));
+		if (texture != NULL) {
+			SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+			SDL_DestroyTexture(t->texture);
+			t->texture = texture;
+			t->logical_w = width;
+			place_targets();
+		}
+	}
+	return t->logical_w;
 }
 
 void vn_wiiu_exit_to_menu(void)

@@ -28,7 +28,11 @@
 /* The default 32 KB stack is too small for the script VM state. */
 u32 __stacksize__ = 256 * 1024;
 
-#define TOP_W 400.0f
+/* The top screen is 400x240 (3DS). On a Wii U TV it can be 427 wide (16:9): the interface
+   uses the extra width, the scene (backgrounds, sprites) stays 400 wide in the middle. */
+static float top_w = 400.0f;
+#define TOP_W top_w
+#define SCENE_X ((TOP_W - 400.0f) / 2.0f)   /* left edge of the 400-wide scene area */
 #define TOP_H 240.0f
 /* The 3DS bottom screen is 320 wide; the Wii U GamePad (854x480, drawn at 2x) uses its
    whole 16:9 width instead of a 4:3 area with bars. */
@@ -1111,7 +1115,9 @@ static int current_textbox_available(void)
 static void apply_screen_options(void)
 {
 #ifdef __WIIU__
-	vn_wiiu_set_tv_stretch(display_options.tv_stretch);
+	top_w = (float)vn_wiiu_set_tv_wide(display_options.tv_wide);
+#elif defined(VN_SDL)
+	top_w = getenv("VN_WIDE") != NULL ? 427.0f : 400.0f;   /* PC test of the wide TV layout */
 #endif
 }
 
@@ -1181,7 +1187,7 @@ static void toggle_display_option_ex(int step, int wrap)
 	} else if (panel_cursor == 5) {
 		next.skip_read = !next.skip_read;
 	} else if (panel_cursor == 9) {
-		next.tv_stretch = !next.tv_stretch;
+		next.tv_wide = !next.tv_wide;
 	}
 	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST)
 		|| (mkdir(SETTINGS_DIR, 0777) != 0 && errno != EEXIST)) {
@@ -2392,7 +2398,7 @@ static void draw_nvl_page(float x, float y, float width, float height, float sca
 static void sprite_origin(const char *pos, float width, float height, float *x, float *y)
 {
 	if (strchr(pos, ',') != NULL) {
-		*x = (float)atoi(pos);
+		*x = SCENE_X + (float)atoi(pos);
 		*y = (float)atoi(strchr(pos, ',') + 1);
 		return;
 	}
@@ -2401,7 +2407,7 @@ static void sprite_origin(const char *pos, float width, float height, float *x, 
 		: strcmp(pos, "right") == 0 ? 310.0f
 		: strcmp(pos, "farleft") == 0 ? 40.0f
 		: strcmp(pos, "farright") == 0 ? 360.0f : 200.0f;
-	*x = center - width / 2.0f;
+	*x = SCENE_X + center - width / 2.0f;
 }
 
 static size_t utf8_prefix(const char *text, size_t chars)
@@ -2499,9 +2505,14 @@ static void draw_textbox(void)
 	config_defaults(&defaults);
 	int custom = display_options_use_custom(&display_options, current_textbox_available());
 	const int *n = custom ? config.num : defaults.num;
-	const float bx = display_options.nvl ? 8.0f : (float)n[NUM_TEXTBOX_X];
+	float bx = display_options.nvl ? 8.0f : (float)n[NUM_TEXTBOX_X];
 	const float by = display_options.nvl ? 8.0f : (float)n[NUM_TEXTBOX_Y];
-	const float bw = display_options.nvl ? 384.0f : (float)n[NUM_TEXTBOX_W];
+	float bw = display_options.nvl ? TOP_W - 16.0f : (float)n[NUM_TEXTBOX_W];
+	if (!display_options.nvl && TOP_W > 400.0f) {
+		/* widescreen: a box spanning the screen widens with it; others move with the scene */
+		if (bx <= 16.0f && bx + bw >= 384.0f) bw += TOP_W - 400.0f;
+		else bx += SCENE_X;
+	}
 	const float bh = display_options.nvl ? 224.0f : (float)n[NUM_TEXTBOX_H];
 	int accumulating = display_options.nvl && config.num[NUM_NVL_ACCUMULATE];
 	int named = !accumulating && event.speaker[0] != '\0';
@@ -2731,41 +2742,42 @@ static void option_texts(const char **labels, const char **values)
 	values[4] = waits[display_options.auto_speed % 3];
 	values[5] = display_options.skip_read ? "Read only" : "All";
 #ifdef __WIIU__
-	values[9] = display_options.tv_stretch ? "Stretch" : "Normal";
+	values[9] = display_options.tv_wide ? "Wide" : "Normal";
 #endif
 }
 
 static void draw_options(void)
 {
+	const float ox = SCENE_X;   /* centred on a wide TV screen */
 	draw_backdrop(IMG_MENU_BG, 225);
-	draw_line(config.labels[LABEL_OPTIONS], 40, 14, 0.7f, theme_accent(), Z_OVERLAY_TEXT, 320);
+	draw_line(config.labels[LABEL_OPTIONS], ox + 40, 14, 0.7f, theme_accent(), Z_OVERLAY_TEXT, 320);
 	const char *labels[OPTION_ROWS], *values[OPTION_ROWS];
 	option_texts(labels, values);
 	int first = option_first();
 	for (int i = first; i < first + OPTION_VISIBLE; ++i) {
 		float y = 46.0f + (float)(i - first) * 27.0f;
 		int selected = i == panel_cursor;
-		draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, 40, y, 320, 24,
+		draw_panel(selected ? IMG_ITEM_SEL : IMG_ITEM, ox + 40, y, 320, 24,
 			selected ? theme_accent() : theme_panel(215), Z_OVERLAY);
 		u32 color = selected && !ui_image(IMG_ITEM_SEL) ? theme_dark_text() : theme_text();
-		draw_line(labels[i], 52, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 155);
+		draw_line(labels[i], ox + 52, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 155);
 		const int *volume = volume_field(&display_options, i);
 		if (volume != NULL) {   /* slider: track, filled part, value */
-			rect(216, y + 10, 100, 4, C2D_Color32(255, 255, 255, 60), Z_OVERLAY_TEXT);
-			rect(216, y + 10, 10.0f * (float)*volume, 4, color, Z_OVERLAY_TEXT + 0.001f);
-			rect(214 + 10.0f * (float)*volume, y + 6, 4, 12, color, Z_OVERLAY_TEXT + 0.002f);
-			draw_line(values[i], 326, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 30);
+			rect(ox + 216, y + 10, 100, 4, C2D_Color32(255, 255, 255, 60), Z_OVERLAY_TEXT);
+			rect(ox + 216, y + 10, 10.0f * (float)*volume, 4, color, Z_OVERLAY_TEXT + 0.001f);
+			rect(ox + 214 + 10.0f * (float)*volume, y + 6, 4, 12, color, Z_OVERLAY_TEXT + 0.002f);
+			draw_line(values[i], ox + 326, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 30);
 		} else {
-			draw_line(values[i], 216, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 130);
+			draw_line(values[i], ox + 216, y + 4, 0.46f, color, Z_OVERLAY_TEXT, 130);
 		}
 	}
 	/* scrollbar: the list is longer than the box */
 	float track = OPTION_VISIBLE * 27.0f - 3.0f;
-	rect(364, 46, 3, track, C2D_Color32(255, 255, 255, 40), Z_OVERLAY);
-	rect(364, 46 + track * (float)first / OPTION_ROWS, 3, track * OPTION_VISIBLE / OPTION_ROWS,
+	rect(ox + 364, 46, 3, track, C2D_Color32(255, 255, 255, 40), Z_OVERLAY);
+	rect(ox + 364, 46 + track * (float)first / OPTION_ROWS, 3, track * OPTION_VISIBLE / OPTION_ROWS,
 		theme_accent(), Z_OVERLAY + 0.001f);
 	draw_line(first + OPTION_VISIBLE < OPTION_ROWS ? "A / Left / Right change   B back   Down: more"
-		: "A / Left / Right change   B back", 40, 213, 0.4f,
+		: "A / Left / Right change   B back", ox + 40, 213, 0.4f,
 		C2D_Color32(150, 170, 165, 255), Z_OVERLAY_TEXT, 0.0f);
 }
 
