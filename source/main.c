@@ -250,16 +250,18 @@ static GameConfig config;
 static DisplayOptions display_options;
 
 /* Text-on-bottom-screen layout: the option applies to ADV text only (NVL stays on top). */
+static int off_tv;   /* Wii U: everything on the GamePad (see OFF_TV) */
+
 static int bottom_text_active(void)
 {
-	return display_options.bottom_text && !display_options.nvl;
+	return display_options.bottom_text && !display_options.nvl && !off_tv;
 }
 
 /* "Top, choices below": text stays on the top screen; the bottom screen holds the
    control strip and the choices as touch buttons. */
 static int choices_below_active(void)
 {
-	return !bottom_text_active() && display_options.touch_choices;
+	return !bottom_text_active() && display_options.touch_choices && !off_tv;
 }
 
 /* Either touch layout: strip buttons, tappable choices, tap to advance. */
@@ -3547,7 +3549,13 @@ static void draw_title_menu(void)
 }
 
 #if defined(__WIIU__) || defined(VN_EXIT_MENU_TEST)
-#define START_HINT "START exit menu"
+#define START_HINT "START exit menu   \xe2\x88\x92 GamePad only"
+/* Off-TV play (Wii U): Minus shows everything on the GamePad. The GamePad's screen has
+   the same logical size as the wide TV picture (427 x 240), so the TV's picture is drawn
+   into the GamePad's target as it is; the TV shows a note. Touches there count as A
+   while playing (the touch buttons are not on screen), except in the Guide, which is
+   shown on the GamePad as usual. */
+#define OFF_TV 1
 #else
 #define START_HINT "START exit app"
 #endif
@@ -3766,7 +3774,11 @@ static const Button play_buttons[] = {
 	{PLAY_COL_R, PLAY_ROW(1), PLAY_COL_W, 32, "Load"},
 	{14, PLAY_ROW(2), PLAY_COL_W, 32, "Hide text  (B)"},
 	{PLAY_COL_R, PLAY_ROW(2), PLAY_COL_W, 32, "Auto  (Y)"},
+#ifdef OFF_TV
+	{PLAY_COL_R, PLAY_ROW(3), PLAY_COL_W, 32, "Quit"},
+#else
 	{PLAY_COL_R, PLAY_ROW(3), PLAY_COL_W, 32, "Quit  (SELECT)"},
+#endif
 	{14, PLAY_ROW(3), PLAY_COL_W, 32, "Guide"},
 };
 static const int play_actions[] = {0, 1, ACT_SAVE, ACT_LOAD, 2, 4, 3, ACT_GUIDE};
@@ -4950,10 +4962,12 @@ static void handle_play_input(u32 down, u32 held, float dt)
 		ui_hidden = !ui_hidden;
 		return;
 	}
+#ifndef OFF_TV   /* on the Wii U, Minus switches off-TV play instead */
 	if (down & KEY_SELECT) {
 		open_panel(PANEL_QUIT);
 		return;
 	}
+#endif
 	if (down & KEY_Y) {
 		auto_mode = !auto_mode;
 		auto_wait = 0.0f;
@@ -5146,6 +5160,19 @@ int main(void)
 		hidScanInput();
 		u32 down = hidKeysDown();
 		u32 repeat = hidKeysDownRepeat();
+#ifdef OFF_TV
+		if (down & KEY_SELECT) {
+			off_tv = !off_tv;
+			snprintf(notice, sizeof(notice), off_tv ? "GamePad only (press \xe2\x88\x92 for the TV)" : "TV and GamePad");
+			down &= ~KEY_SELECT;
+			repeat &= ~KEY_SELECT;
+		}
+		if (off_tv && panel != PANEL_GUIDE && (down & KEY_TOUCH)) {
+			down &= ~KEY_TOUCH;
+			repeat &= ~KEY_TOUCH;
+			if (mode == MODE_PLAY && panel == PANEL_NONE) down |= KEY_A;   /* tap: next line */
+		}
+#endif
 		if (start_requested) {   /* e.g. the game list's Exit button */
 			start_requested = 0;
 			down |= KEY_START;
@@ -5281,6 +5308,25 @@ int main(void)
 		}
 #endif
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+#ifdef OFF_TV
+		if (off_tv) {
+			C2D_TargetClear(top, C2D_Color32(0, 0, 0, 255));
+			C2D_SceneBegin(top);
+			draw_line("Playing on the GamePad   (press \xe2\x88\x92 to show the TV again)", 12, 222, 0.4f,
+				C2D_Color32(110, 120, 120, 255), Z_TEXT, 0.0f);
+			if (panel == PANEL_GUIDE && !exit_open && !exiting) {
+				draw_bottom(bottom);
+			} else {
+				float tv_width = top_w;
+				top_w = BOTTOM_W;   /* the wide layout fills the GamePad */
+				draw_top(bottom);
+				if (exit_open || exiting) draw_exit_top();
+				top_w = tv_width;
+			}
+			C3D_FrameEnd(0);
+			continue;
+		}
+#endif
 		draw_top(top);
 #ifdef EXIT_MENU
 		if (exit_open || exiting) {

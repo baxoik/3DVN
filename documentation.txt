@@ -338,6 +338,11 @@ blocks. Words are separated by spaces; text containing spaces goes in
   with no menu open and not after 90 seconds without input or a new line.
   Shown on the bottom screen with the time of day.
 
+  Off-TV play (Wii U): Minus shows everything on the GamePad (the TV picture,
+  text box and menus, drawn in the wide layout); tapping the GamePad then
+  advances the text. Minus again returns to TV + GamePad. (Quit is on the
+  touch buttons and in the game menu.)
+
   Saves from another version of a game (its scripts changed) load at the same
   line of dialogue in the new scripts, if that line still exists.
 
