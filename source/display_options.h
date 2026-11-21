@@ -14,6 +14,7 @@ typedef struct {
 	int master_volume;  /* 0..10 */
 	int music_volume;   /* 0..10 */
 	int voice_volume;   /* 0..10, sounds under audio/v/ */
+	bool tv_stretch;    /* Wii U: stretch the top screen to the TV's full width */
 } DisplayOptions;
 
 typedef enum {
@@ -39,7 +40,7 @@ void display_options_apply_game_default(DisplayOptions *options, DisplayOptionsR
 /*
  * The file has exactly one custom_textbox=0|1 line and one nvl=0|1 line,
  * and at most one each of bottom_text=0|1, text_speed=0..3, auto_speed=0..2,
- * skip_read=0|1, touch_choices=0|1 and master_volume, music_volume, voice_volume=0..10
+ * skip_read=0|1, touch_choices=0|1, tv_stretch=0|1 and master_volume, music_volume, voice_volume=0..10
  * (missing ones take their defaults), in any order. LF and CRLF are accepted; the final newline is optional.
  * A missing file returns MISSING and sets defaults, unless a backup exists,
  * in which case it is loaded and RECOVERED is returned. Other errors leave

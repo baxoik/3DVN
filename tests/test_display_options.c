@@ -39,7 +39,10 @@ int main(int argc, char **argv) {
 	assert(r == DISPLAY_OPTIONS_OK || r == DISPLAY_OPTIONS_SAVED_BACKUP_REMAINS);
 	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_OK && o.custom_textbox && !o.nvl && !o.bottom_text);
 	assert(o.touch_choices && o.text_speed == 2 && o.auto_speed == 0 && o.skip_read);
-	assert(o.master_volume == 7 && o.music_volume == 0 && o.voice_volume == 10);
+	assert(o.master_volume == 7 && o.music_volume == 0 && o.voice_volume == 10 && !o.tv_stretch);
+	w.tv_stretch = true;
+	r = display_options_save(path, &w);
+	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_OK && o.tv_stretch);
 	unlink(path);
 	write_file(path, "custom_textbox=1\nnvl=0\n");                      /* older file: full volume */
 	assert(display_options_load(path, &o) == DISPLAY_OPTIONS_OK);

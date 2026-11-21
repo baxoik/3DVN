@@ -21,7 +21,13 @@
 
 #define TOP_W 400
 #define TOP_H 240
+#ifdef VN_BOTTOM_W
+#define BOTTOM_W VN_BOTTOM_W
+#elif defined(__WIIU__)
+#define BOTTOM_W 427   /* the GamePad's full 854x480 at 2x */
+#else
 #define BOTTOM_W 320
+#endif
 #define BOTTOM_H 240
 
 /* ---------------------------------------------------------------- outputs */
@@ -57,12 +63,17 @@ static float TOP_SCALE = 3.0f;      /* 1200x720 on a 720p TV; 4.5 (1800x1080) on
 static float TOP_SCALE = 2.0f, BOTTOM_SCALE = 2.0f;
 #endif
 
+#ifdef __WIIU__
+static int tv_stretch;
+#endif
+
 static void place_targets(void)
 {
 #ifdef __WIIU__
 	for (int i = 0; i < 2; ++i) {
 		Output *out = &outputs[targets[i].output];
 		int w = (int)(targets[i].logical_w * targets[i].scale), h = (int)(targets[i].logical_h * targets[i].scale);
+		if (i == GFX_TOP && tv_stretch) w = out->width;   /* full TV width (about 7% wider) */
 		targets[i].place = (SDL_Rect){(out->width - w) / 2, (out->height - h) / 2, w, h};
 	}
 #else
@@ -1061,6 +1072,12 @@ int vn_wiiu_exit_to_hbl(void)
 	RLLaunchHomebrew launch = rpx_loader_launch();
 	const char *path = hbl_path();
 	return launch != NULL && path != NULL && launch(path) == 0 ? 1 : 0;
+}
+
+void vn_wiiu_set_tv_stretch(int on)
+{
+	tv_stretch = on != 0;
+	if (outputs[0].window != NULL) place_targets();
 }
 
 void vn_wiiu_exit_to_menu(void)

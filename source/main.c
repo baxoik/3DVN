@@ -30,7 +30,15 @@ u32 __stacksize__ = 256 * 1024;
 
 #define TOP_W 400.0f
 #define TOP_H 240.0f
+/* The 3DS bottom screen is 320 wide; the Wii U GamePad (854x480, drawn at 2x) uses its
+   whole 16:9 width instead of a 4:3 area with bars. */
+#ifdef VN_BOTTOM_W
+#define BOTTOM_W ((float)VN_BOTTOM_W)
+#elif defined(__WIIU__)
+#define BOTTOM_W 427.0f
+#else
 #define BOTTOM_W 320.0f
+#endif
 #ifndef ROOT_DIR   /* SDL builds (PC, Wii U) pass their own */
 #define ROOT_DIR "sdmc:/3ds/3dvn"
 #endif
@@ -1075,6 +1083,13 @@ static int current_textbox_available(void)
 		: custom_textbox_available;
 }
 
+static void apply_screen_options(void)
+{
+#ifdef __WIIU__
+	vn_wiiu_set_tv_stretch(display_options.tv_stretch);
+#endif
+}
+
 static void apply_volumes(void)
 {
 	audio_set_volumes(display_options.master_volume / 10.0f, display_options.music_volume / 10.0f,
@@ -1089,6 +1104,7 @@ static void load_display_options(void)
 	DisplayOptionsResult result = display_options_load(path, &display_options);
 	display_options_apply_game_default(&display_options, result, config.default_nvl);
 	apply_volumes();
+	apply_screen_options();
 	if (result != DISPLAY_OPTIONS_OK && result != DISPLAY_OPTIONS_MISSING) {
 		const char *problem = result == DISPLAY_OPTIONS_RECOVERED
 			? "Options recovered from backup; check settings files"
@@ -1139,6 +1155,8 @@ static void toggle_display_option_ex(int step, int wrap)
 		next.auto_speed = (next.auto_speed + 3 + step) % 3;
 	} else if (panel_cursor == 5) {
 		next.skip_read = !next.skip_read;
+	} else if (panel_cursor == 9) {
+		next.tv_stretch = !next.tv_stretch;
 	}
 	if ((mkdir(ROOT_DIR, 0777) != 0 && errno != EEXIST)
 		|| (mkdir(SETTINGS_DIR, 0777) != 0 && errno != EEXIST)) {
@@ -1153,6 +1171,7 @@ static void toggle_display_option_ex(int step, int wrap)
 	}
 	display_options = next;
 	apply_volumes();
+	apply_screen_options();
 	snprintf(notice, sizeof(notice), "%s", result == DISPLAY_OPTIONS_SAVED_BACKUP_REMAINS
 		? "Options saved; remove old settings backup" : "Options saved");
 }
@@ -2646,7 +2665,11 @@ static void draw_game_menu(void)
 		Z_OVERLAY_TEXT, 0.0f);
 }
 
+#ifdef __WIIU__
+#define OPTION_ROWS 10   /* + TV screen */
+#else
 #define OPTION_ROWS 9
+#endif
 #define OPTION_VISIBLE 6
 static int option_top;   /* first Options row shown; follows the cursor */
 
@@ -2665,7 +2688,11 @@ static void option_texts(const char **labels, const char **values)
 	static const char *speeds[] = {"Slow", "Normal", "Fast", "Instant"};
 	static const char *waits[] = {"Short", "Normal", "Long"};
 	static const char *names[OPTION_ROWS] = {"Textbox", "Display style", "Text screen", "Text speed",
-		"Auto speed", "Fast-forward", "Master volume", "Music volume", "Voice volume"};
+		"Auto speed", "Fast-forward", "Master volume", "Music volume", "Voice volume"
+#ifdef __WIIU__
+		, "TV screen"
+#endif
+	};
 	static char volumes[3][8];
 	for (int i = 0; i < 3; ++i) {
 		snprintf(volumes[i], sizeof(volumes[i]), "%d", *volume_field(&display_options, 6 + i));
@@ -2678,6 +2705,9 @@ static void option_texts(const char **labels, const char **values)
 	values[3] = speeds[display_options.text_speed & 3];
 	values[4] = waits[display_options.auto_speed % 3];
 	values[5] = display_options.skip_read ? "Read only" : "All";
+#ifdef __WIIU__
+	values[9] = display_options.tv_stretch ? "Stretch" : "Normal";
+#endif
 }
 
 static void draw_options(void)
@@ -3044,11 +3074,12 @@ static void draw_top(C3D_RenderTarget *target)
 }
 
 static const Button play_buttons[] = {
-	{14, 34, 142, 42, "Menu  (X)"},
-	{164, 34, 142, 42, "Backlog  (L)"},
-	{14, 82, 142, 42, "Hide text  (B)"},
-	{164, 82, 142, 42, "Quit  (SELECT)"},
-	{14, 130, 292, 38, "Auto  (Y)"},
+	/* two columns across the bottom screen (142 px wide each on the 3DS) */
+	{14, 34, (BOTTOM_W - 36) / 2, 42, "Menu  (X)"},
+	{22 + (BOTTOM_W - 36) / 2, 34, (BOTTOM_W - 36) / 2, 42, "Backlog  (L)"},
+	{14, 82, (BOTTOM_W - 36) / 2, 42, "Hide text  (B)"},
+	{22 + (BOTTOM_W - 36) / 2, 82, (BOTTOM_W - 36) / 2, 42, "Quit  (SELECT)"},
+	{14, 130, BOTTOM_W - 28, 38, "Auto  (Y)"},
 };
 #define AUTO_BUTTON 4
 /* Slim strip along the bottom edge when the dialogue is shown on the bottom screen. */
@@ -3069,11 +3100,12 @@ static int choice_buttons(Button *out)
 }
 
 static const Button strip_buttons[] = {
-	{4, 208, 60, 28, "Menu"},
-	{68, 208, 60, 28, "Log"},
-	{132, 208, 60, 28, "Hide"},
-	{196, 208, 60, 28, "Quit"},
-	{260, 208, 56, 28, "Auto"},
+	/* five equal buttons across the bottom screen (64 px apart on the 3DS) */
+	{4, 208, (BOTTOM_W - 4) / 5 - 4, 28, "Menu"},
+	{4 + (BOTTOM_W - 4) / 5, 208, (BOTTOM_W - 4) / 5 - 4, 28, "Log"},
+	{4 + 2 * (BOTTOM_W - 4) / 5, 208, (BOTTOM_W - 4) / 5 - 4, 28, "Hide"},
+	{4 + 3 * (BOTTOM_W - 4) / 5, 208, (BOTTOM_W - 4) / 5 - 4, 28, "Quit"},
+	{4 + 4 * (BOTTOM_W - 4) / 5, 208, (BOTTOM_W - 4) / 5 - 4, 28, "Auto"},
 };
 #define COUNT_OF(array) (int)(sizeof(array) / sizeof((array)[0]))
 

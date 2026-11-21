@@ -39,6 +39,8 @@ bool aptMainLoop(void);
    Launcher is being launched (keep running until the system closes the app; classic HBL
    via SYSRelaunchTitle, Aroma via RPXLoader), 0 when it is not available. */
 int vn_wiiu_can_exit_to_hbl(void);
+/* Stretch the top screen to the TV's full width (1 = on). */
+void vn_wiiu_set_tv_stretch(int on);
 int vn_wiiu_exit_to_hbl(void);
 void vn_wiiu_exit_to_menu(void);
 #endif
