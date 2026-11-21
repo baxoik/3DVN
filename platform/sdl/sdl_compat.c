@@ -842,6 +842,22 @@ static void replay(C3D_RenderTarget *t)
 
 static void save_screenshot(const char *name);
 static const char *pending_shot;
+static char frame_note[64] = "";
+
+void vn_frame_note(const char *note)
+{
+	snprintf(frame_note, sizeof(frame_note), "%s", note);
+}
+
+void vn_log(const char *format, ...)
+{
+	char line[256];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(line, sizeof(line), format, args);
+	va_end(args);
+	boot_log("%u ms: %s", (unsigned)SDL_GetTicks(), line);
+}
 
 void C3D_FrameEnd(u8 flags)
 {
@@ -872,7 +888,7 @@ void C3D_FrameEnd(u8 flags)
 	static int slow_logged;
 	if (last != 0 && now - last > 50 && slow_logged < 300) {   /* diagnosing hitches on console */
 		++slow_logged;
-		boot_log("%u ms: slow frame %u ms", (unsigned)now, (unsigned)(now - last));
+		boot_log("%u ms: slow frame %u ms (%s)", (unsigned)now, (unsigned)(now - last), frame_note);
 	}
 	if (last != 0 && now - last < 16) SDL_Delay((Uint32)(16 - (now - last)));
 	last = SDL_GetTicks64();

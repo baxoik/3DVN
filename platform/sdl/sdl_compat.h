@@ -29,6 +29,11 @@ typedef int32_t Result;
 /* ---------- system ---------- */
 bool aptMainLoop(void);
 
+/* Diagnostics in <ROOT_DIR>/boot.log: what the app was doing (shown with slow frames),
+   and free-form lines (e.g. slow file loads). */
+void vn_frame_note(const char *note);
+void vn_log(const char *format, ...);
+
 /* Italic markers inside drawn text (the engine turns [i] / [/i] into these): */
 #define VN_ITALIC_ON '\x0e'
 #define VN_ITALIC_OFF '\x0f'

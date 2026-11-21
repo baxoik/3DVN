@@ -623,7 +623,25 @@ static void fill_picture(Picture *picture, const unsigned char *pixels)
 	GSPGPU_FlushDataCache(picture->tex.data, (size_t)tex_w * tex_h * 4);
 }
 
+static Picture *load_picture_timed(const char *path);
+
 static Picture *load_picture(const char *path)
+{
+#ifdef VN_SDL
+	u32 started = now_ms();
+	Picture *picture = load_picture_timed(path);
+	u32 took = now_ms() - started;
+	if (took > 30) {
+		size_t root = strlen(game_dir);
+		vn_log("load %u ms: %s", (unsigned)took, strncmp(path, game_dir, root) ? path : path + root);
+	}
+	return picture;
+#else
+	return load_picture_timed(path);
+#endif
+}
+
+static Picture *load_picture_timed(const char *path)
 {
 	size_t size;
 	unsigned char *file_data = read_file(path, &size);
@@ -930,8 +948,15 @@ static void play_audio_event(const GsEvent *e, int is_music)
 			break;
 		}
 	}
+#ifdef VN_SDL
+	u32 started = now_ms();
+#endif
 	int ok = is_music ? audio_play_music(path, e->seconds, err, sizeof(err))
 		: audio_play_sfx(path, err, sizeof(err));
+#ifdef VN_SDL
+	u32 took = now_ms() - started;
+	if (took > 30) vn_log("audio %u ms: %s", (unsigned)took, e->asset);
+#endif
 	if (ok) {
 		if (is_music) {
 			snprintf(scene.music, sizeof(scene.music), "%s", e->asset);
@@ -4248,6 +4273,15 @@ int main(void)
 			last_notice[0] = '\0';
 		}
 
+#ifdef VN_SDL
+		{
+			char frame_note[64];
+			snprintf(frame_note, sizeof(frame_note), "%s%s%s%s",
+				mode == MODE_PLAY ? "play" : mode == MODE_TITLE ? "title" : mode == MODE_SELECT ? "list" : "error",
+				fast_forward ? " ff" : "", auto_mode ? " auto" : "", panel != PANEL_NONE ? " panel" : "");
+			vn_frame_note(frame_note);
+		}
+#endif
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 		draw_top(top);
 #ifdef EXIT_MENU
