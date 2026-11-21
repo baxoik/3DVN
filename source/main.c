@@ -2972,6 +2972,27 @@ static void draw_scene(void)
 	}
 }
 
+/* Where the text box was drawn this frame (for the Auto indicator); w = 0 if not drawn. */
+static float shown_box_x, shown_box_y, shown_box_w;
+static u32 shown_box_frame, frame_counter;
+
+/* "AUTO" with a play mark at the top right of the text box (just above it when there is
+   room), or at the top right of the screen when no box is shown. */
+static void draw_auto_indicator(void)
+{
+	const float w = 50.0f, h = 15.0f;
+	float x = TOP_W - w - 6.0f, y = 4.0f;
+	if (shown_box_frame == frame_counter && shown_box_w > 0.0f) {
+		x = shown_box_x + shown_box_w - w - 4.0f;
+		y = shown_box_y >= h + 4.0f ? shown_box_y - h - 2.0f : shown_box_y + 4.0f;
+	}
+	rect(x, y, w, h, C2D_Color32(0, 0, 0, 150), Z_HEADER);
+	rect(x, y + h - 1.0f, w, 1.0f, COLOR_ACCENT, Z_HEADER + 0.01f);
+	C2D_DrawTriangle(x + 6.0f, y + 3.5f, COLOR_ACCENT, x + 6.0f, y + h - 4.5f, COLOR_ACCENT,
+		x + 12.5f, y + h / 2.0f - 0.5f, COLOR_ACCENT, Z_HEADER_TEXT);
+	draw_line("AUTO", x + 16.0f, y + 1.0f, 0.4f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
+}
+
 static void draw_textbox(void)
 {
 	GameConfig defaults;
@@ -2987,6 +3008,10 @@ static void draw_textbox(void)
 		else bx += SCENE_X;
 	}
 	const float bh = display_options.nvl ? 224.0f : (float)n[NUM_TEXTBOX_H];
+	shown_box_x = bx;
+	shown_box_y = by;
+	shown_box_w = bw;
+	shown_box_frame = frame_counter;
 	int accumulating = display_options.nvl && config.num[NUM_NVL_ACCUMULATE];
 	int named = !accumulating && event.speaker[0] != '\0';
 	Picture *textbox = custom ? ui_image(display_options.nvl && custom_nvl_available
@@ -3635,6 +3660,7 @@ static void draw_exit_bottom(C3D_RenderTarget *target)
 
 static void draw_top(C3D_RenderTarget *target)
 {
+	++frame_counter;
 	C2D_TargetClear(target, C2D_Color32(0, 0, 0, 255));
 	C2D_SceneBegin(target);
 	C2D_TextBufClear(text_buf);
@@ -3714,11 +3740,11 @@ static void draw_top(C3D_RenderTarget *target)
 		draw_line("THE END", 150, 100, 0.8f, C2D_Color32(255, 255, 255, 255), Z_TEXT, 0.0f);
 	}
 	if (ff_blocked && panel == PANEL_NONE && waiting == PLAY_TEXT) {
-		draw_line("UNREAD - press A", 272, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
+		draw_line("UNREAD - press A", TOP_W - 128, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
 	} else if (fast_forward && panel == PANEL_NONE && waiting != PLAY_MENU && waiting != PLAY_END) {
-		draw_line(">> FAST FORWARD", 290, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
+		draw_line(">> FAST FORWARD", TOP_W - 110, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
 	} else if (auto_mode && panel == PANEL_NONE && waiting != PLAY_END) {
-		draw_line("AUTO", 360, 4, 0.45f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
+		draw_auto_indicator();
 	}
 	if (bottom_text_active() && panel == PANEL_NONE && notice[0] != '\0') {
 		/* The bottom screen is full of dialogue in this layout, so notices go here. */
@@ -3726,33 +3752,34 @@ static void draw_top(C3D_RenderTarget *target)
 	}
 }
 
+/* Touch buttons of the play screen, in two columns (142 px wide each on the 3DS):
+       Menu       Backlog
+       Save       Load
+       Hide text  Auto
+       Guide      Quit        (Guide only when the game has one; Quit stays bottom right)
+   Each button's action uses the strip_buttons numbering below (0-4), plus these: */
+enum { ACT_GUIDE = 5, ACT_SAVE = 6, ACT_LOAD = 7 };
+#define PLAY_COL_W ((BOTTOM_W - 36) / 2)
+#define PLAY_COL_R (22 + PLAY_COL_W)
+#define PLAY_ROW(n) (34 + (n) * 36)
 static const Button play_buttons[] = {
-	/* two columns across the bottom screen (142 px wide each on the 3DS) */
-	{14, 34, (BOTTOM_W - 36) / 2, 42, "Menu  (X)"},
-	{22 + (BOTTOM_W - 36) / 2, 34, (BOTTOM_W - 36) / 2, 42, "Backlog  (L)"},
-	{14, 82, (BOTTOM_W - 36) / 2, 42, "Hide text  (B)"},
-	{22 + (BOTTOM_W - 36) / 2, 82, (BOTTOM_W - 36) / 2, 42, "Quit  (SELECT)"},
-	{14, 130, BOTTOM_W - 28, 38, "Auto  (Y)"},
+	{14, PLAY_ROW(0), PLAY_COL_W, 32, "Menu  (X)"},
+	{PLAY_COL_R, PLAY_ROW(0), PLAY_COL_W, 32, "Backlog  (L)"},
+	{14, PLAY_ROW(1), PLAY_COL_W, 32, "Save"},
+	{PLAY_COL_R, PLAY_ROW(1), PLAY_COL_W, 32, "Load"},
+	{14, PLAY_ROW(2), PLAY_COL_W, 32, "Hide text  (B)"},
+	{PLAY_COL_R, PLAY_ROW(2), PLAY_COL_W, 32, "Auto  (Y)"},
+	{PLAY_COL_R, PLAY_ROW(3), PLAY_COL_W, 32, "Quit  (SELECT)"},
+	{14, PLAY_ROW(3), PLAY_COL_W, 32, "Guide"},
 };
-#define AUTO_BUTTON 4
+static const int play_actions[] = {0, 1, ACT_SAVE, ACT_LOAD, 2, 4, 3, ACT_GUIDE};
+#define AUTO_BUTTON 4        /* in strip_buttons */
+#define PLAY_AUTO_BUTTON 5   /* in play_buttons */
 #define COUNT_OF(array) (int)(sizeof(array) / sizeof((array)[0]))
-/* With a guide: Auto and Guide share the last row. */
-static const Button play_buttons_guide[] = {
-	{14, 34, (BOTTOM_W - 36) / 2, 42, "Menu  (X)"},
-	{22 + (BOTTOM_W - 36) / 2, 34, (BOTTOM_W - 36) / 2, 42, "Backlog  (L)"},
-	{14, 82, (BOTTOM_W - 36) / 2, 42, "Hide text  (B)"},
-	{22 + (BOTTOM_W - 36) / 2, 82, (BOTTOM_W - 36) / 2, 42, "Quit  (SELECT)"},
-	{14, 130, (BOTTOM_W - 36) / 2, 38, "Auto  (Y)"},
-	{22 + (BOTTOM_W - 36) / 2, 130, (BOTTOM_W - 36) / 2, 38, "Guide"},
-};
 
 static const Button *play_button_set(int *count)
 {
-	if (guide_file[0] != '\0') {
-		*count = COUNT_OF(play_buttons_guide);
-		return play_buttons_guide;
-	}
-	*count = COUNT_OF(play_buttons);
+	*count = COUNT_OF(play_buttons) - (guide_file[0] == '\0');   /* Guide is the last one */
 	return play_buttons;
 }
 /* Slim strip along the bottom edge when the dialogue is shown on the bottom screen. */
@@ -4442,13 +4469,14 @@ static void draw_bottom(C3D_RenderTarget *target)
 	int button_count;
 	const Button *buttons = play_button_set(&button_count);
 	for (int index = 0; index < button_count; ++index) {
-		draw_button_box(&buttons[index], index == AUTO_BUTTON && auto_mode);
+		draw_button_box(&buttons[index], index == PLAY_AUTO_BUTTON && auto_mode);
 	}
 	draw_line(waiting == PLAY_MENU ? "D-pad choose   A confirm" : "A next   Y auto   Hold R fast-forward",
-		14, 176, 0.42f, dim, Z_TEXT, 0.0f);
-	draw_line(ui_hidden ? "Text hidden - press B or A" : START_HINT, 14, 192, 0.42f, dim, Z_TEXT, 0.0f);
-	if (notice[0] != '\0') {
-		draw_line(notice, 14, 212, 0.45f, C2D_Color32(255, 200, 120, 255), Z_TEXT, BOTTOM_W - 28);
+		14, 180, 0.42f, dim, Z_TEXT, 0.0f);
+	draw_line(ui_hidden ? "Text hidden - press B or A" : START_HINT, 14, 194, 0.42f, dim, Z_TEXT, 0.0f);
+	if (notice[0] != '\0') {   /* over the playtime line */
+		rect(0, 206, BOTTOM_W, 18, config.has_bg ? rgb_color(config.bg, 255) : C2D_Color32(17, 29, 34, 255), Z_TEXT + 0.01f);
+		draw_line(notice, 14, 208, 0.42f, C2D_Color32(255, 200, 120, 255), Z_TEXT + 0.02f, BOTTOM_W - 28);
 	}
 }
 
@@ -4878,12 +4906,19 @@ static void handle_play_input(u32 down, u32 held, float dt)
 	if (down & KEY_TOUCH) {
 		touchPosition touch;
 		hidTouchRead(&touch);
-		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT, PANEL_NONE, PANEL_GUIDE};
+		static const Panel targets[] = {PANEL_MENU, PANEL_BACKLOG, PANEL_NONE, PANEL_QUIT, PANEL_NONE,
+			PANEL_GUIDE, PANEL_SAVE, PANEL_LOAD};
 		int button_count;
 		const Button *buttons = play_button_set(&button_count);
-		int button = touch_layout_active() ? hit_button(strip_buttons, COUNT_OF(strip_buttons), &touch)
-			: waiting == PLAY_MENU && !ui_hidden && event.choice_count > 0 ? -1   /* choices own the screen */
-			: hit_button(buttons, button_count, &touch);
+		int button;
+		if (touch_layout_active()) {
+			button = hit_button(strip_buttons, COUNT_OF(strip_buttons), &touch);
+		} else if (waiting == PLAY_MENU && !ui_hidden && event.choice_count > 0) {
+			button = -1;   /* choices own the screen */
+		} else {
+			button = hit_button(buttons, button_count, &touch);
+			if (button >= 0) button = play_actions[button];
+		}
 		if (button == 2) {
 			ui_hidden = !ui_hidden;
 			return;
