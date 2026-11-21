@@ -2976,21 +2976,18 @@ static void draw_scene(void)
 static float shown_box_x, shown_box_y, shown_box_w;
 static u32 shown_box_frame, frame_counter;
 
-/* "AUTO" with a play mark at the top right of the text box (just above it when there is
-   room), or at the top right of the screen when no box is shown. */
+/* Auto mode: a small play mark inside the text box's top right corner (the screen's top
+   right when no box is shown), gently pulsing. */
 static void draw_auto_indicator(void)
 {
-	const float w = 50.0f, h = 15.0f;
-	float x = TOP_W - w - 6.0f, y = 4.0f;
+	float x = TOP_W - 16.0f, y = 6.0f;
 	if (shown_box_frame == frame_counter && shown_box_w > 0.0f) {
-		x = shown_box_x + shown_box_w - w - 4.0f;
-		y = shown_box_y >= h + 4.0f ? shown_box_y - h - 2.0f : shown_box_y + 4.0f;
+		x = shown_box_x + shown_box_w - 15.0f;
+		y = shown_box_y + 6.0f;
 	}
-	rect(x, y, w, h, C2D_Color32(0, 0, 0, 150), Z_HEADER);
-	rect(x, y + h - 1.0f, w, 1.0f, COLOR_ACCENT, Z_HEADER + 0.01f);
-	C2D_DrawTriangle(x + 6.0f, y + 3.5f, COLOR_ACCENT, x + 6.0f, y + h - 4.5f, COLOR_ACCENT,
-		x + 12.5f, y + h / 2.0f - 0.5f, COLOR_ACCENT, Z_HEADER_TEXT);
-	draw_line("AUTO", x + 16.0f, y + 1.0f, 0.4f, COLOR_ACCENT, Z_HEADER_TEXT, 0.0f);
+	float pulse = 0.6f + 0.4f * sinf((float)(now_ms() % 1600u) / 1600.0f * 6.2831853f);
+	u32 color = (COLOR_ACCENT & 0x00FFFFFFu) | ((u32)(255.0f * pulse) << 24);
+	C2D_DrawTriangle(x, y, color, x, y + 9.0f, color, x + 7.5f, y + 4.5f, color, Z_HEADER_TEXT);
 }
 
 static void draw_textbox(void)
@@ -4017,12 +4014,22 @@ static void draw_slot_list(void)
 	draw_line(footer, 40, 224, 0.4f, C2D_Color32(150, 170, 165, 255), Z_OVERLAY_TEXT, 0.0f);
 }
 
+static int quit_choices(const char **labels, int *actions);
+static void leave_game(void);
+
 static void draw_quit_confirm(void)
 {
 	draw_backdrop(IMG_MENU_BG, 225);
-	draw_line("Quit to the game list?", 70, 80, 0.6f, theme_accent(), Z_OVERLAY_TEXT, TOP_W - 140);
-	draw_line("Unsaved progress will be lost.", 70, 108, 0.45f, theme_text(), Z_OVERLAY_TEXT, TOP_W - 140);
-	draw_line("A  Yes        B  No", 70, 140, 0.5f, theme_text(), Z_OVERLAY_TEXT, TOP_W - 140);
+	draw_line("Quit?", 70, 50, 0.6f, theme_accent(), Z_OVERLAY_TEXT, TOP_W - 140);
+	draw_line("Unsaved progress will be lost.", 70, 76, 0.45f, theme_text(), Z_OVERLAY_TEXT, TOP_W - 140);
+	const char *labels[4];
+	int actions[4];
+	int count = quit_choices(labels, actions);
+	for (int index = 0; index < count; ++index) {
+		draw_list_row(104.0f + (float)index * 30.0f, labels[index], index == panel_cursor);
+	}
+	draw_line("D-pad choose   A confirm   B keep playing", 40, 224, 0.4f, C2D_Color32(150, 170, 165, 255),
+		Z_OVERLAY_TEXT, 0.0f);
 }
 
 /* Menus as touch buttons on the bottom screen (title menu, in-game menu): `count` item
@@ -4127,7 +4134,38 @@ static int option_touch_labels(const char **labels)
 	return OPTION_VISIBLE;
 }
 
-static const char *const quit_touch_labels[] = {"Yes, quit to the game list"};
+/* The in-game Quit choices: the game list, and on the Wii U also the Homebrew Launcher and
+   the Wii U Menu (as START offers); elsewhere closing the app. */
+enum { QUIT_LIST, QUIT_HBL, QUIT_SYSTEM, QUIT_APP };
+static int quit_app;   /* set when a Quit choice closes the app; the main loop ends */
+
+static int quit_choices(const char **labels, int *actions)
+{
+	int count = 0;
+	labels[count] = "Quit to the game list"; actions[count++] = QUIT_LIST;
+#ifdef EXIT_MENU
+	if (vn_wiiu_can_exit_to_hbl()) { labels[count] = "Quit to the Homebrew Launcher"; actions[count++] = QUIT_HBL; }
+	labels[count] = "Quit to the Wii U Menu"; actions[count++] = QUIT_SYSTEM;
+#else
+	labels[count] = "Close 3DVN"; actions[count++] = QUIT_APP;
+#endif
+	return count;
+}
+
+static void choose_quit(int action)
+{
+	if (action == QUIT_LIST) {
+		leave_game();
+		return;
+	}
+	read_save();
+	playtime_save();
+#ifdef EXIT_MENU
+	if (choose_exit(action == QUIT_HBL ? EXIT_HBL : EXIT_WIIU_MENU)) quit_app = 1;
+#else
+	quit_app = 1;
+#endif
+}
 
 static int menu_touch_labels(const char **labels)
 {
@@ -4367,8 +4405,17 @@ static void draw_bottom(C3D_RenderTarget *target)
 		return;
 	}
 	if (panel == PANEL_QUIT && mode == MODE_PLAY) {
-		draw_touch_list("Quit to the game list?", quit_touch_labels, 1, -1, "No, keep playing");
-		draw_line("Unsaved progress will be lost.", 20, 80, 0.45f, C2D_Color32(150, 170, 165, 255), Z_TEXT, BOTTOM_W - 40);
+		const char *labels[4];
+		int actions[4];
+		int count = quit_choices(labels, actions);
+		draw_touch_list("Quit? Unsaved progress is lost.", labels, count, panel_cursor, "No, keep playing");
+		return;
+	}
+	if (mode == MODE_TITLE && panel == PANEL_LOAD) {
+		const char *labels[SLOT_VISIBLE];
+		int count = slot_touch_labels(labels);
+		draw_touch_list(notice[0] != '\0' ? notice : "Load which slot?", labels, count, panel_cursor - slot_first(), "Back");
+		draw_touch_scrollbar(slot_first(), SLOT_VISIBLE, SAVE_SLOTS);
 		return;
 	}
 	if (mode == MODE_TITLE && panel == PANEL_NONE) {
@@ -4523,6 +4570,8 @@ static void open_panel(Panel which)
 		menu_cursor_item = 0;
 	} else if (which == PANEL_BACKLOG) {
 		backlog_view = 0;
+	} else if (which == PANEL_QUIT) {
+		panel_cursor = 0;
 	} else if (which == PANEL_ENDINGS) {
 		ending_top = 0;
 	} else if (which == PANEL_GUIDE) {
@@ -4817,18 +4866,25 @@ static void handle_panel_input(u32 down, u32 repeat)
 		break;
 	}
 	case PANEL_QUIT: {
+		const char *labels[4];
+		int actions[4];
+		int count = quit_choices(labels, actions);
+		if (panel_cursor < 0 || panel_cursor >= count) panel_cursor = 0;
+		if (repeat & KEY_DDOWN) panel_cursor = (panel_cursor + 1) % count;
+		if (repeat & KEY_DUP) panel_cursor = (panel_cursor + count - 1) % count;
 		if (down & KEY_A) {
-			leave_game();
+			choose_quit(actions[panel_cursor]);
 		} else if (down & KEY_B) {
 			close_panel();
 		} else if (down & KEY_TOUCH) {
 			touchPosition touch;
 			hidTouchRead(&touch);
-			Button buttons[2];
-			int hit = hit_button(buttons, touch_list_buttons(buttons, quit_touch_labels, 1, "No, keep playing"), &touch);
-			if (hit == 0) {
-				leave_game();
-			} else if (hit == 1) {
+			Button buttons[6];
+			int hit = hit_button(buttons, touch_list_buttons(buttons, labels, count, "No, keep playing"), &touch);
+			if (hit >= 0 && hit < count) {
+				panel_cursor = hit;
+				choose_quit(actions[hit]);
+			} else if (hit == count) {
 				close_panel();
 			}
 		}
@@ -5115,6 +5171,7 @@ int main(void)
 		}
 #endif
 
+		if (quit_app) break;
 		audio_update(dt);
 		if (down || hidKeysHeld()) last_activity = now;
 		if (mode == MODE_PLAY && panel == PANEL_NONE && !extras_mode && now - last_activity < IDLE_LIMIT_MS
