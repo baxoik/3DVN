@@ -1,0 +1,8 @@
+# G-Senjou no Maou endings: 3DVN sets g_end_<chapter> when the story ends in that chapter
+Tsubaki - bad end = g_end_g23
+Tsubaki - good end = g_end_gted
+Kanon - bad end = g_end_gk07
+Kanon - good end = g_end_gked
+Mizuha - bad end = g_end_gm04
+Mizuha - good end = g_end_gmed
+Haru - true end = g_end_g55

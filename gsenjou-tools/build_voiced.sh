@@ -20,6 +20,7 @@ python3 -I "$HERE/fix_scene.py" "$ROOT/tools/import_gsenjou.py" "$KS" "$HEADS" "
 python3 -I "$HERE/fix_leaked_commands.py" "$OUT"
 python3 -I "$HERE/chapter_select.py" "$OUT"
 python3 -I "$HERE/normalize_text.py" "$OUT"
+cp "$HERE/endings.txt" "$OUT/endings.txt"   # endings checklist (3DVN sets g_end_<chapter>)
 "$CHECK" "$OUT/main.3vs"
 for f in "$OUT"/ch/*.3vs; do cp "$f" "$OUT/_chk.3vs"; "$CHECK" "$OUT/_chk.3vs" >/dev/null || { echo "FAILED: $f"; exit 1; }; done
 rm -f "$OUT/_chk.3vs"
