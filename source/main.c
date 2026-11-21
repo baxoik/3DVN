@@ -2371,6 +2371,52 @@ static void draw_dialogue_with_advance(const char *text, float x, float y, float
 
 static size_t utf8_prefix(const char *text, size_t chars);
 
+#ifdef VN_SDL
+/* Draws dialogue whose lines are already broken ('\n'), line by line, revealing `reveal`
+   characters: whole lines as they are, the line being typed clipped at a width that grows
+   smoothly through each character (the renderer fades its edge). Each line's text stays
+   the same while it types, so it is rendered once instead of every frame. */
+static void draw_text_reveal(const char *text, float x, float y, float scale, u32 color, float reveal)
+{
+	float previous_scale = measure_scale;
+	measure_scale = scale;
+	C2D_Text metric;
+	float line_height;
+	C2D_TextBufClear(measure_buf);
+	C2D_TextFontParse(&metric, font, measure_buf, "Ag");
+	C2D_TextGetDimensions(&metric, scale, scale, NULL, &line_height);
+	int row = 0;
+	for (const char *start = text; *start != '\0' && reveal > 0.0f; ++row) {
+		const char *end = strchr(start, '\n');
+		size_t length = end != NULL ? (size_t)(end - start) : strlen(start);
+		if (length >= GS_TEXT_LEN) length = GS_TEXT_LEN - 1;
+		size_t chars = 0;
+		for (size_t b = 0; b < length; ++b) chars += ((unsigned char)start[b] & 0xC0) != 0x80;
+		char line[GS_TEXT_LEN];
+		memcpy(line, start, length);
+		line[length] = '\0';
+		if (reveal < (float)chars) {
+			size_t whole = (size_t)reveal;
+			size_t at = utf8_prefix(line, whole), next = utf8_prefix(line, whole + 1);
+			float left = measure_text(line, at, NULL), right = measure_text(line, next, NULL);
+			float clip = left + (right - left) * (reveal - (float)whole);
+			if (clip > 0.0f) {
+				vn_clip_next_text(clip);
+				draw_line(line, x, y + (float)row * line_height, scale, color, Z_TEXT, 0.0f);
+			}
+			break;
+		}
+		draw_line(line, x, y + (float)row * line_height, scale, color, Z_TEXT, 0.0f);
+		reveal -= (float)chars + 1.0f;   /* the line break stands for the space it replaced */
+		if (end == NULL) break;
+		start = end + 1;
+	}
+	measure_scale = previous_scale;
+}
+#endif
+
+static size_t utf8_prefix(const char *text, size_t chars);
+
 static void draw_nvl_page(float x, float y, float width, float height, float scale, u32 color)
 {
 	char shown[NVL_PAGE_MAX_BYTES + 1];
@@ -2646,19 +2692,34 @@ static void draw_textbox(void)
 	if (!display_options.nvl) {
 		scale = fit_text_scale(event.text, width, bh - text_y - 4.0f, scale);
 	}
+#ifdef VN_SDL
+	/* lay out the whole line once; draw_text_reveal shows the typed part smoothly */
+	reveal_with_breaks(full, strlen(full), width, scale, shown, sizeof(shown));
+	float reveal = chars_shown - (float)(full - event.text);
+	(void)visible;
+#else
 	reveal_with_breaks(full, visible, width, scale, shown, sizeof(shown));
+#endif
 	const char *visible_text = shown;
 	Picture *advance = advance_available ? ui_image(IMG_ADVANCE) : NULL;
 	/* The lines are already broken (reveal_with_breaks); give the renderer room so it never
 	   wraps again: fonts render slightly wider at some sizes (Wii U), which pushed an extra
 	   line out of the bottom of the box. */
 	float draw_width = width * REWRAP_SLACK;
+#ifdef VN_SDL
+	if (advance != NULL && event.text[length] == '\0') {
+		draw_dialogue_with_advance(visible_text, bx + text_x, by + text_y, draw_width, scale, color, advance, 1);
+	} else {
+		draw_text_reveal(visible_text, bx + text_x, by + text_y, scale, color, reveal);
+	}
+#else
 	if (advance != NULL) {
 		draw_dialogue_with_advance(visible_text, bx + text_x, by + text_y, draw_width, scale, color,
 			advance, event.text[length] == '\0');
 	} else {
 		draw_wrapped(visible_text, bx + text_x, by + text_y, draw_width, scale, color, Z_TEXT);
 	}
+#endif
 }
 
 static void draw_choices(void)
@@ -3320,16 +3381,31 @@ static void draw_bottom_dialogue(void)
 		if (visible > 0) --visible;
 	}
 	scale = fit_text_scale(event.text, width, bh - text_y - 6.0f, scale);
+#ifdef VN_SDL
+	/* lay out the whole line once; draw_text_reveal shows the typed part smoothly */
+	reveal_with_breaks(full, strlen(full), width, scale, shown, sizeof(shown));
+	float reveal = chars_shown - (float)(full - event.text);
+	(void)visible;
+#else
 	reveal_with_breaks(full, visible, width, scale, shown, sizeof(shown));
+#endif
 	const char *visible_text = shown;
 	Picture *advance = advance_available ? ui_image(IMG_ADVANCE) : NULL;
 	float draw_width = width * REWRAP_SLACK;   /* see draw_textbox */
+#ifdef VN_SDL
+	if (advance != NULL && event.text[length] == '\0') {
+		draw_dialogue_with_advance(visible_text, text_x, text_y, draw_width, scale, color, advance, 1);
+	} else {
+		draw_text_reveal(visible_text, text_x, text_y, scale, color, reveal);
+	}
+#else
 	if (advance != NULL) {
 		draw_dialogue_with_advance(visible_text, text_x, text_y, draw_width, scale, color,
 			advance, event.text[length] == '\0');
 	} else {
 		draw_wrapped(visible_text, text_x, text_y, draw_width, scale, color, Z_TEXT);
 	}
+#endif
 }
 
 static int list_first(int cursor, int total)

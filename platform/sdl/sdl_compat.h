@@ -32,6 +32,8 @@ bool aptMainLoop(void);
 /* Diagnostics in <ROOT_DIR>/boot.log: what the app was doing (shown with slow frames),
    and free-form lines (e.g. slow file loads). */
 void vn_frame_note(const char *note);
+/* The next C2D_DrawText shows only `width` units of the text from the left (> 0). */
+void vn_clip_next_text(float width);
 void vn_log(const char *format, ...);
 
 /* Italic markers inside drawn text (the engine turns [i] / [/i] into these): */

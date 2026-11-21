@@ -525,6 +525,7 @@ typedef struct {
 	char *text;
 	C2D_Font font;
 	float scale, wrap;
+	float clip;     /* > 0: draw only this many units of the text's width (typewriter reveal) */
 } DrawCmd;
 
 typedef struct {
@@ -590,6 +591,8 @@ bool C2D_DrawRectangle(float x, float y, float z, float w, float h, u32 c0, u32 
 	return true;
 }
 
+static float next_text_clip;
+
 void C2D_DrawText(const C2D_Text *text, u32 flags, float x, float y, float z, float scale_x, float scale_y, ...)
 {
 	(void)scale_y;
@@ -610,6 +613,13 @@ void C2D_DrawText(const C2D_Text *text, u32 flags, float x, float y, float z, fl
 	cmd->font = text->font;
 	cmd->scale = scale_x;
 	cmd->wrap = wrap;
+	cmd->clip = next_text_clip;
+	next_text_clip = 0.0f;
+}
+
+void vn_clip_next_text(float width)
+{
+	next_text_clip = width;
 }
 
 /* Rendered text, cached: white glyphs, tinted at draw time. */
@@ -829,7 +839,30 @@ static void replay(C3D_RenderTarget *t)
 				float line = LINE_UNITS * cmd->scale * s;
 				float pad = (line - (float)TTF_FontLineSkip(font_at(cmd->font, pixels))) / 2.0f;
 				SDL_FRect dst = {cmd->x * s, cmd->y * s + pad, (float)rendered->w, (float)rendered->h};
-				SDL_RenderCopyF(r, rendered->texture, NULL, &dst);
+				if (cmd->clip > 0.0f && cmd->clip * s < (float)rendered->w) {
+					/* reveal: the visible part only, with a soft right edge */
+					float visible = cmd->clip * s;
+					int whole = (int)visible;
+					SDL_Rect src = {0, 0, whole, rendered->h};
+					dst.w = (float)whole;
+					if (whole > 0) SDL_RenderCopyF(r, rendered->texture, &src, &dst);
+					int fade = (int)(4.0f * s);   /* the last few pixels fade in */
+					for (int step = 0; step < 4 && whole + step < rendered->w; ++step) {
+						int x0 = whole + step * fade / 4, x1 = whole + (step + 1) * fade / 4;
+						if (x1 > rendered->w) x1 = rendered->w;
+						if (x1 <= x0) continue;
+						float strength = (visible + fade - (float)x0) / (float)(fade * 2);
+						if (strength <= 0.0f) break;
+						if (strength > 1.0f) strength = 1.0f;
+						SDL_Rect part = {x0, 0, x1 - x0, rendered->h};
+						SDL_FRect at = {cmd->x * s + (float)x0, dst.y, (float)(x1 - x0), (float)rendered->h};
+						SDL_SetTextureAlphaMod(rendered->texture, (Uint8)((float)(k >> 24 & 255) * strength * 0.5f));
+						SDL_RenderCopyF(r, rendered->texture, &part, &at);
+					}
+					SDL_SetTextureAlphaMod(rendered->texture, k >> 24 & 255);
+				} else {
+					SDL_RenderCopyF(r, rendered->texture, NULL, &dst);
+				}
 			}
 			free(cmd->text);
 		}
