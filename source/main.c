@@ -909,6 +909,11 @@ static void play_audio_event(const GsEvent *e, int is_music)
 		audio_stop_sfx();
 		return;
 	}
+	if (!is_music && fast_forward && !strncmp(e->asset, "v/", 2)) {
+		/* Voices are cut by the next line anyway while fast-forwarding; loading each
+		   one made fast-forward stutter on Wii U. Other sounds (ambience) still play. */
+		return;
+	}
 	static const char *extensions[] = {".ogg", ".wav", ""};
 	char path[400];
 	for (int index = 0; index < 3; ++index) {
