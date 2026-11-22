@@ -6,7 +6,7 @@ Usage:
       (a Steam copy unpacked by gsenjou-tools/extract_steam.py; 1280x720 art, with
        hd/ copies for PC and Wii U, and voices if the copy has them)
   python3 tools/import_gsenjou.py --src "g-senjou no maou" --out games/g-senjou-no-maou
-      (the older 800x600 fan dump: 1-raw-scripts/ and Img-Sound Files/*.zip)
+      (scripts of the older 800x600 release: 1-raw-scripts/ and Img-Sound Files/*.zip)
 Options:
   --no-assets   skip converting source images and audio; still write the UI skin
   --voices      also convert the voice files (about 14,000 WAVs, several GB)
@@ -1150,7 +1150,7 @@ def write_game(out, chapters, converter):
         with open(os.path.join(out, "ch", stem + ".3vs"), "w", encoding="utf-8") as handle:
             handle.write("include characters.3vs\n")
             handle.write("\n".join(body) + "\n")
-    # The adult scenes are only in some releases (the fan dump; the Steam release with the
+    # The adult scenes are only in some releases (the older 800x600 release; the Steam release with the
     # unrated patch). Their scripts skip them when global.nonero is set: ask only then.
     adult = any(re.search(r"\bnonero\b", line) for body in chapters.values() for line in body)
     main = ["# G-Senjou no Maou, converted for 3DVN.", "bg black"]

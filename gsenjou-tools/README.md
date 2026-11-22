@@ -89,9 +89,9 @@ empty to skip packing).
      `audio/<name>.loop` (rain, phone and other ambience).
 4. `tools/make_pack.py` packs the two archives.
 
-### Older builds from the fan dump
+### Older builds from the 800x600 release
 
-Before the Steam tools, the game was built from a separate 800x600 fan dump
+Before the Steam tools, the game was built from a separate copy of the older 800x600 release (same English translation, slightly different edit, with the adult scenes)
 (`import_gsenjou.py --src`), with voices lined up from the Steam scripts
 (`build_voiced.sh`, `add_voices.py`) and HD pictures matched in (`make_hd.py`,
 `make_archives.sh`). Those tools still work for such a dump but aren't needed with a
