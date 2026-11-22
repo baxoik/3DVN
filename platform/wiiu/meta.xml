@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>3DVN</name>
+  <coder>baxoik, davidgith1</coder>
+  <version>@VERSION@</version>
+  <release_date>@DATE@</release_date>
+  <short_description>Visual novel engine</short_description>
+  <long_description>3DVN visual novel engine for Wii U: the scene on the TV, controls and menus on the GamePad. Put games in sd:/wiiu/3dvn/games/.</long_description>
+</app>
