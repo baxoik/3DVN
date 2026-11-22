@@ -15,7 +15,7 @@
 >
 > **Converters**
 > - [gsenjou-tools/](gsenjou-tools/README.md): build G-Senjou no Maou from your own Steam copy in one command (voices, HD art, the unrated patch if installed, chapter select).
-> - Ever17 is converted by a separate tool (not in this repository).
+> - [ever17-tools/](ever17-tools/README.md): build Ever17 from one complete game folder (the PC release, ideally with the Himmel Edition patch applied) in one command: full voices, music, HD art, endings checklist. GPLv2, ported from Ever17Converter.
 >
 > No game content is included; the tools work on files from your own copy. Upstream has no license, so this fork is offered as-is. These changes were written with AI assistance (Claude Code).
 

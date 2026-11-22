@@ -1,0 +1,6 @@
+# work output and game data: never commit
+out/
+packs/
+__pycache__/
+*.dat
+*guide.txt
