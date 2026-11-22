@@ -2,7 +2,11 @@
 """Convert the translated G-Senjou no Maou KiriKiri scripts into a 3DVN game.
 
 Usage:
+  python3 tools/import_gsenjou.py --steam steam-work --out games/g-senjou-no-maou --only g01
+      (a Steam copy unpacked by gsenjou-tools/extract_steam.py; 1280x720 art, with
+       hd/ copies for PC and Wii U, and voices if the copy has them)
   python3 tools/import_gsenjou.py --src "g-senjou no maou" --out games/g-senjou-no-maou
+      (the older 800x600 fan dump: 1-raw-scripts/ and Img-Sound Files/*.zip)
 Options:
   --no-assets   skip converting source images and audio; still write the UI skin
   --voices      also convert the voice files (about 14,000 WAVs, several GB)
@@ -28,6 +32,16 @@ from concurrent.futures import ThreadPoolExecutor
 SCALE = 0.4            # 800x600 source -> 320x240 picture centred on the 400x240 screen
 SCREEN_X = 40          # (400 - 320) / 2
 SLOT_CENTERS = {"ll": 100, "l": 250, "c": 400, "r": 550, "rr": 700}
+SCENE_W, SCENE_H = 800, 600
+
+
+def use_steam_geometry():
+    """The Steam release's 1280x720 screen, scaled by 1/3 (see SteamAssets)."""
+    global SCALE, SCREEN_X, SLOT_CENTERS, SCENE_W, SCENE_H
+    SCALE = 1 / 3
+    SCREEN_X = (400 - 1280 / 3) / 2
+    SLOT_CENTERS = {"ll": 128, "l": 320, "c": 640, "r": 960, "rr": 1152}   # stBaseLL ... stBaseRR
+    SCENE_W, SCENE_H = 1280, 720
 SLOT_IDS = {"ll": "sll", "l": "sl", "c": "sc", "r": "sr", "rr": "srr"}
 SAY_LIMIT = 200
 
@@ -293,7 +307,7 @@ class Assets:
                     return None
                 image = image.crop(bounds)
             left, top = max(0, -x), max(0, -y)
-            right, bottom = min(image.width, 800 - x), min(image.height, 600 - y)
+            right, bottom = min(image.width, SCENE_W - x), min(image.height, SCENE_H - y)
             if right <= left or bottom <= top:
                 self.missing["cutin"].add(stem + " (outside scene)")
                 self.sprite_cache[key] = None
@@ -425,9 +439,267 @@ class Assets:
         return len(jobs)
 
 
+class SteamAssets(Assets):
+    """Art and sound from a Steam copy unpacked by gsenjou-tools/extract_steam.py.
+
+    The Steam release draws at 1280x720. Pictures are scaled by 1/3 for the 3DS (a
+    background becomes 427x240, shown centred on the 400-wide screen, i.e. the sides
+    cropped by 13 pixels; the Wii U's wide TV layout shows it whole). The originals go
+    to hd/ for PC and Wii U. Sprites stand where the original puts them: the slot's base
+    x (1280/10, /4, /2, ...) plus the per-character offset from character_pos.tjs, and
+    that table's top y.
+    """
+
+    def __init__(self, src, out, enabled, voices, bgm_rate, voice_rate):
+        self.src, self.out, self.enabled = src, out, enabled
+        self.voices = voices and os.path.isdir(os.path.join(src, "voice"))
+        self.bgm_rate, self.voice_rate = bgm_rate, voice_rate
+        self.sprite_cache = {}
+        self.missing = collections.defaultdict(set)
+        self.used = collections.defaultdict(set)
+        self.audio_jobs = []
+        self.files = {}
+        png = os.path.join(src, "png")
+        image_folders = ["bgimage", "evimage", "fgimage", "face", "image", "others"]
+        image_folders += sorted(f for f in (os.listdir(png) if os.path.isdir(png) else [])
+                                if f not in image_folders)   # e.g. a patch's own images
+        for folder in image_folders:
+            base = os.path.join(src, "png", folder)
+            if os.path.isdir(base):
+                for name in os.listdir(base):
+                    stem, ext = os.path.splitext(name)
+                    if ext.lower() == ".png":
+                        self.files.setdefault(("image", stem.lower()), (folder, os.path.join(base, name)))
+            raw = os.path.join(src, folder)   # images stored as PNG/JPEG rather than TLG
+            if os.path.isdir(raw):
+                for name in os.listdir(raw):
+                    stem, ext = os.path.splitext(name)
+                    if ext.lower() in (".png", ".jpg", ".jpeg"):
+                        self.files.setdefault(("image", stem.lower()), (folder, os.path.join(raw, name)))
+        for folder in ("bgm", "sound", "voice"):
+            base = os.path.join(src, folder)
+            if os.path.isdir(base):
+                for name in os.listdir(base):
+                    stem, ext = os.path.splitext(name)
+                    if ext.lower() in (".ogg", ".wav"):
+                        self.files[(folder, stem.lower())] = (folder, os.path.join(base, name))
+        self.positions = {}
+        for name in ("character_pos.tjs", "character_pos_org.tjs"):
+            path = os.path.join(src, "data", "alter", name)
+            if os.path.exists(path):
+                text = open(path, encoding="utf-8", errors="replace").read()
+                for key, dx, dy in re.findall(r'"(st_[^"]+)"\s*=>\s*\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]', text):
+                    self.positions.setdefault(key, (int(dx), int(dy)))
+        self.index = {}
+
+    def _image(self, stem):
+        found = self.files.get(("image", stem.lower()))
+        if found is None:
+            return None, None
+        from PIL import Image
+        return found[0], Image.open(found[1])
+
+    def _save(self, image, folder, name, ext, size):
+        """Writes the 3DS-sized picture and, for PC / Wii U, the original as hd/."""
+        from PIL import Image
+        target = os.path.join(self.out, folder, name + ext)
+        if os.path.exists(target):
+            return
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        hd = os.path.join(self.out, "hd", folder, name + ext)
+        os.makedirs(os.path.dirname(hd), exist_ok=True)
+        if ext == ".jpg":
+            image = image.convert("RGB")
+            image.resize(size, Image.LANCZOS).save(target, quality=88)
+            image.save(hd, quality=90)
+        else:
+            image.resize(size, Image.LANCZOS).save(target, optimize=True)
+            image.save(hd, optimize=True)
+
+    def background(self, stem):
+        if stem in ("black", "white"):
+            return stem
+        stem = BG_ALIASES.get(stem, stem)
+        self.used["bg"].add(stem)
+        folder, image = self._image(stem)
+        if image is None:
+            if stem == "ev_fin":
+                return self.end_card(stem)
+            self.missing["bg"].add(stem)
+            return stem
+        if self.enabled:
+            from PIL import Image
+            if image.mode in ("RGBA", "LA", "P"):
+                image = image.convert("RGBA")
+                back = Image.new("RGB", image.size, (0, 0, 0))
+                back.paste(image, mask=image.getchannel("A"))
+                image = back
+            size = (max(1, round(image.width * SCALE)), max(1, round(image.height * SCALE)))
+            self._save(image, "bg", stem, ".jpg", size)
+        return stem
+
+    def gallery_assets(self):
+        stems = sorted(stem for (kind, stem), (folder, _) in self.files.items()
+                       if kind == "image" and folder == "evimage" and stem.startswith("ev_"))
+        if not self.enabled:
+            return len(stems)
+        from PIL import Image
+        thumb_dir = os.path.join(self.out, "gallery", "thumbs")
+        os.makedirs(thumb_dir, exist_ok=True)
+        for stem in stems:
+            self.background(stem)
+            source = os.path.join(self.out, "bg", stem + ".jpg")
+            target = os.path.join(thumb_dir, stem + ".jpg")
+            if os.path.isfile(source) and not os.path.exists(target):
+                with Image.open(source) as image:
+                    image = image.convert("RGB")
+                    image.thumbnail((112, 78), Image.LANCZOS)
+                    image.save(target, quality=76, optimize=True)
+        return len(stems)
+
+    def sprite(self, stem):
+        """(name, x offset from the slot's base, y) in screen pixels, or None."""
+        if stem in self.sprite_cache:
+            return self.sprite_cache[stem]
+        self.used["sprite"].add(stem)
+        _, image = self._image("st_" + stem)
+        result = None
+        if image is None:
+            self.missing["sprite"].add(stem)
+        else:
+            image = image.convert("RGBA")
+            parts = stem.split("_")
+            key = "st_" + "_".join([parts[0], parts[1], parts[4] if len(parts) == 5 else parts[-1]]) \
+                if len(parts) >= 4 else "st_" + stem
+            dx, dy = self.positions.get(key, (-image.width // 2, 720 - image.height))
+            if key not in self.positions:
+                self.missing["sprite position"].add(key)
+            # only the part inside the 1280x720 screen
+            top, bottom = max(0, -dy), min(image.height, 720 - dy)
+            box = image.crop((0, top, image.width, max(top + 1, bottom))).getchannel("A").getbbox()
+            if box is None:
+                self.missing["sprite"].add(stem + " (off screen)")
+            else:
+                left, upper, right, lower = box
+                cropped = image.crop((left, top + upper, right, top + lower))
+                if self.enabled:
+                    size = (max(1, round(cropped.width * SCALE)), max(1, round(cropped.height * SCALE)))
+                    self._save(cropped, "sprites", stem, ".png", size)
+                result = (stem, SCALE * (dx + left), SCALE * (dy + top + upper))
+        self.sprite_cache[stem] = result
+        return result
+
+    def face(self, name):
+        base = re.sub(r"_[bs]$", "", name)
+        key = ("face", base)
+        if key in self.sprite_cache:
+            return self.sprite_cache[key]
+        self.used["face"].add(base)
+        _, image = self._image("st_" + base + "_f")
+        result = None
+        if image is None:
+            self.missing["face"].add(base)
+        else:
+            image = image.convert("RGBA")
+            cropped = image.crop(image.getchannel("A").getbbox() or (0, 0, image.width, image.height))
+            result = "face_" + base
+            if self.enabled:
+                size = (max(1, round(cropped.width * SCALE)), max(1, round(cropped.height * SCALE)))
+                self._save(cropped, "sprites", result, ".png", size)
+        self.sprite_cache[key] = result
+        return result
+
+    def overlay(self, stem, x, y, clip=None):
+        key = ("overlay", stem, x, y, clip)
+        if key in self.sprite_cache:
+            return self.sprite_cache[key]
+        self.used["sprite"].add("cut:" + stem)
+        _, image = self._image(stem)
+        result = None
+        if image is None:
+            self.missing["cutin"].add(stem)
+        else:
+            image = image.convert("RGBA")
+            if clip:
+                cl, ct, cw, ch = clip
+                image = image.crop((cl, ct, cl + cw, ct + ch))
+            left, top = max(0, -x), max(0, -y)
+            right, bottom = min(image.width, SCENE_W - x), min(image.height, SCENE_H - y)
+            box = image.crop((left, top, right, bottom)).getchannel("A").getbbox() \
+                if right > left and bottom > top else None
+            if box is None:
+                self.missing["cutin"].add(stem + " (outside the screen or transparent)")
+            else:
+                cropped = image.crop((left + box[0], top + box[1], left + box[2], top + box[3]))
+                name = f"cut_{stem}_{x}_{y}" + ("" if not clip else "_" + "_".join(str(v) for v in clip))
+                if self.enabled:
+                    size = (max(1, round(cropped.width * SCALE)), max(1, round(cropped.height * SCALE)))
+                    self._save(cropped, "sprites", name, ".png", size)
+                result = (name, left + box[0], top + box[1])
+        self.sprite_cache[key] = result
+        return result
+
+    def sound(self, stem):
+        if stem == "keyenter" and ("sound", "keyenter") not in self.files:
+            return self.synth_click(stem)
+        self.used["se"].add(stem)
+        return self._audio_file("sound", stem, self.bgm_rate, "se", stem)
+
+    def music(self, stem):
+        self.used["bgm"].add(stem)
+        return self._audio_file("bgm", stem, self.bgm_rate, "bgm", stem)
+
+    def voice(self, stem):
+        if not self.voices:
+            return None
+        self.used["voice"].add(stem)
+        # FAT32 looks names up by scanning the folder: voices go in folders of <= 100 files
+        return self._audio_file("voice", stem, self.voice_rate, "voice", f"v/{stem[:-2]}/{stem}")
+
+    def duration(self, stem):
+        found = self.files.get(("sound", stem.lower()))
+        if found is None:
+            return 0.0
+        result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                 "-of", "csv=p=0", found[1]], capture_output=True)
+        try:
+            return float(result.stdout.decode().strip())
+        except ValueError:
+            return 0.0
+
+    def _audio_file(self, folder, stem, rate, kind, name):
+        found = self.files.get((folder, stem.lower()))
+        if found is None:
+            self.missing[kind].add(stem)
+            return None
+        if self.enabled:
+            self.audio_jobs.append((found[1], os.path.join(self.out, "audio", name + ".wav"), rate))
+        return name
+
+    def run_audio(self):
+        jobs = {target: (source, target, rate) for source, target, rate in self.audio_jobs}
+        jobs = [job for job in jobs.values() if not os.path.exists(job[1])]
+
+        def convert(job):
+            source, target, rate = job
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", source, "-ac", "1", "-ar", str(rate),
+                            "-sample_fmt", "s16", "-f", "wav", target + ".part"], check=True)
+            os.replace(target + ".part", target)
+
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as pool:
+            for count, _ in enumerate(pool.map(convert, jobs), 1):
+                if count % 1000 == 0:
+                    print(f"  audio {count}/{len(jobs)}")
+        return len(jobs)
+
+
 class Converter:
     def __init__(self, src, assets):
         self.dir = os.path.join(src, "1-raw-scripts")
+        steam_scripts = os.path.join(src, "data", "scenario")
+        if not os.path.isdir(self.dir) and os.path.isdir(steam_scripts):
+            self.dir = steam_scripts
         self.assets = assets
         self.stats = collections.Counter()
         self.characters = {}
@@ -878,20 +1150,23 @@ def write_game(out, chapters, converter):
         with open(os.path.join(out, "ch", stem + ".3vs"), "w", encoding="utf-8") as handle:
             handle.write("include characters.3vs\n")
             handle.write("\n".join(body) + "\n")
-    main = [
-        "# G-Senjou no Maou (fan translation), converted for 3DVN.",
-        "bg black",
-        "set nonero = 0",
-        '"This story contains adult scenes. Include them?"',
-        "menu",
-        '  choice "Include adult scenes"',
-        "    set nonero = 0",
-        '  choice "Skip adult scenes"',
-        "    set nonero = 1",
-        "end",
-        "page",
-        'script "ch/g01"',
-    ]
+    # The adult scenes are only in some releases (the fan dump; the Steam release with the
+    # unrated patch). Their scripts skip them when global.nonero is set: ask only then.
+    adult = any(re.search(r"\bnonero\b", line) for body in chapters.values() for line in body)
+    main = ["# G-Senjou no Maou, converted for 3DVN.", "bg black"]
+    if adult:
+        main += [
+            "set nonero = 0",
+            '"This story contains adult scenes. Include them?"',
+            "menu",
+            '  choice "Include adult scenes"',
+            "    set nonero = 0",
+            '  choice "Skip adult scenes"',
+            "    set nonero = 1",
+            "end",
+            "page",
+        ]
+    main.append('script "ch/g01"')
     with open(os.path.join(out, "main.3vs"), "w", encoding="utf-8") as handle:
         handle.write("\n".join(main) + "\n")
     with open(os.path.join(out, "game.3vc"), "w", encoding="utf-8") as handle:
@@ -911,6 +1186,8 @@ def write_game(out, chapters, converter):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--src", default="g-senjou no maou")
+    parser.add_argument("--steam", metavar="DIR", help="a Steam copy unpacked by gsenjou-tools/extract_steam.py "
+                        "(takes the place of --src; voices are included when it has them)")
     parser.add_argument("--out", default="games/g-senjou-no-maou")
     parser.add_argument("--no-assets", action="store_true",
                         help="skip source image/audio conversion (still generate the UI skin)")
@@ -920,8 +1197,14 @@ def main():
     parser.add_argument("--only", nargs="*", default=["g01"])
     options = parser.parse_args()
 
-    assets = Assets(options.src, options.out, not options.no_assets, options.voices,
-                    options.bgm_rate, options.voice_rate)
+    if options.steam:
+        use_steam_geometry()
+        options.src = options.steam
+        assets = SteamAssets(options.steam, options.out, not options.no_assets, True,
+                             options.bgm_rate, options.voice_rate)
+    else:
+        assets = Assets(options.src, options.out, not options.no_assets, options.voices,
+                        options.bgm_rate, options.voice_rate)
     converter = Converter(options.src, assets)
     chapters = converter.convert_all(options.only)
     os.makedirs(options.out, exist_ok=True)

@@ -2,7 +2,7 @@
 """Turn KiriKiri commands that leaked into dialogue back into script, in a converted
 G-Senjou game.
 
-usage: fix_leaked_commands.py GAME_DIR   (edits GAME_DIR/ch/*.3vs in place)
+usage: fix_leaked_commands.py GAME_DIR [--steam]   (edits GAME_DIR/ch/*.3vs in place)
 
 Older imports treated indented KiriKiri lines as text (tools/import_gsenjou.py now
 handles them), so the "no adult scenes" branch of each H-scene subroutine showed
@@ -20,11 +20,13 @@ width (macro.ks: stBaseLL = width/10, stBaseL = width/4, C = width/2, R and RR m
 i.e. 80/200/400/600/720 on an 800-wide picture. tools/import_gsenjou.py uses
 100/250/400/550/700, so characters stood too close together. "show <slot> ... at X Y" is
 shifted by the difference at 0.4 scale: sll -8, sl -20, sr +20, srr +8 (sc unchanged).
-Run once per build on a fresh import (the shift is not idempotent).
+Run once per build on a fresh import (the shift is not idempotent). A build from the Steam
+release (--steam) already uses the original positions, so it is not shifted.
 """
 import os, re, sys
 
 game = sys.argv[1]
+respace = "--steam" not in sys.argv[2:]
 TEXT = re.compile(r'^(\s*)"(.*)"\s*$')
 counts = {"return": 0, "music fade": 0, "removed": 0, "font tags": 0, "sprites respaced": 0}
 SLOT_SHIFT = {"sll": -8, "sl": -20, "sr": 20, "srr": 8}
@@ -45,7 +47,7 @@ for name in sorted(os.listdir(os.path.join(game, "ch"))):
     out = []
     for line in lines:
         shown = SHOW_AT.match(line)
-        if shown:
+        if shown and respace:
             line = f"{shown.group(1)}{int(shown.group(3)) + SLOT_SHIFT[shown.group(2)]}{shown.group(4)}"
             counts["sprites respaced"] += 1
         if "font" in line and line.lstrip().startswith(('"', "choice")) or re.match(r'^\s*[a-z_]+: "', line):

@@ -11,3 +11,6 @@ emu/shots/
 emu/*.so
 emu/*.3dsx
 emu/core.log
+steam-work/
+steam-build/
+__pycache__/

@@ -1,8 +1,7 @@
-# G-Senjou no Maou on 3DVN: voices, scene fixes and testing
+# G-Senjou no Maou on 3DVN
 
-Tools for turning a voiceless G-Senjou build made with `tools/import_gsenjou.py`
-into a fully voiced one, fixing face portraits and leftover sprites, adding a
-chapter select, getting the result onto a 3DS, and testing it in an emulator.
+Tools that build G-Senjou no Maou for 3DVN (3DS, PC and Wii U) from **your own Steam
+copy of the game**, get it onto a 3DS, and test it in an emulator.
 
 **This repository contains no game content.** Every tool here works on files
 from your own copy of the game. Keep those files, and anything built from them,
@@ -20,125 +19,83 @@ out of git (see `.gitignore`).
 - **Close-up sprites in front:** sprites whose name ends in `_b` are drawn after
   the others, matching the original's layer order.
 - **No "THE END" over end cards:** it's only drawn over an empty or black screen.
+- **Endings checklist:** 3DVN records the chapter each ending finishes in;
+  `endings.txt` names them.
 - **Test build:** `make EXTRA_CFLAGS=-DAUTOTEST` logs on-screen notices, errors,
   chapter loads and shrunk or overflowing lines to `sdmc:/3dvn-test.log`.
 
 ## What you need
 
-- A voiceless game folder from `tools/import_gsenjou.py`.
-- The chapter scripts as readable `.ks` files (`g01.ks`, `g02.ks`, ...) and the
-  voice clips as `.ogg`, from your own copy of the game. Getting those files out
-  of your copy isn't covered here.
-- `heads.txt`: the `getStNameHead()` case list from the game's `macro.ks`, one
-  line per case, in the form `"<name>":tempName = "<head>"`. Copy it from your
-  own copy.
-- Python 3 with Pillow, ffmpeg, and a C compiler (for the script checker).
+- G-Senjou no Maou from Steam, installed (with or without its voices: a copy without
+  `arc/voice.xp3` builds an unvoiced game).
+- Python 3 with numpy and Pillow, ffmpeg, and a C compiler (for the script checker).
+- About 10 GB of free space while building.
 
-## Build the voiced game
+## Build
 
-1. Convert the voice clips to WAV (16 kHz mono; these are the 3DS-sized voices, the PC
-   and Wii U archive uses your original clips instead). A sound effect can be at most
-   4 MB once decoded, so re-encode any clip over 2 MB at 11025 Hz:
+```sh
+gsenjou-tools/build_from_steam.sh
+```
 
-   ```sh
-   mkdir -p voice-wav
-   for f in voice/*.ogg; do
-     ffmpeg -v error -i "$f" -ac 1 -ar 16000 -sample_fmt s16 "voice-wav/$(basename "$f" .ogg).wav"
-   done
-   find voice-wav -name '*.wav' -size +2048k   # re-encode these with -ar 11025
-   ```
+That's all. If your Steam library is somewhere else, point `STEAM` at the game's
+install folder (the one with `data.xp3` and `arc/`):
 
-2. Build:
+```sh
+STEAM="/path/to/G-senjou no Maou - The Devil on G-String" gsenjou-tools/build_from_steam.sh
+```
 
-   ```sh
-   GAME=path/to/g-senjou-no-maou KS=path/to/ks VOICES=voice-wav HEADS=heads.txt \
-     VOICE_OVERRIDES=path/to/voice_overrides.tsv gsenjou-tools/build_voiced.sh
-   ```
+It makes:
 
-   This runs, in order:
-   - `add_voices.py` puts a voice line before each spoken line. The importer's
-     own text pipeline is run on the readable scripts and lined up with your
-     build's lines: exact matches first, then near matches (same speaker, ≥85%
-     similar, numbers spelled out), then lines merged or split between versions,
-     then reworded lines paired in order between matched anchors. Voices are
-     stored in `audio/v/<group>/` folders of at most 100 files, because FAT32
-     slows down badly with one huge folder.
-   - `fix_scene.py` shows face portraits the original way. `@mface` and `@chr`
-     only remember a face; each line shows its speaker's remembered face (ADV
-     mode only); `@clear_mface` forgets them all. Every background change and
-     chapter start also hides all five sprite slots.
-   - `fix_leaked_commands.py` repairs what the import got wrong:
-     - KiriKiri commands left in as dialogue: with adult scenes off, each H-scene
-       showed "@return" and friends as text and then played anyway. `@return`
-       becomes `return` again, `@fobgm` a music fade; gallery jumps and comments
-       are dropped.
-     - `[ font italic="true" ]...[ resetfont ]` become `[i]...[/i]` (italics on PC
-       and Wii U, upright on 3DS).
-     - Character spacing: the original stands characters at 10/25/50/75/90% of the
-       screen width; the import used narrower positions, so the side slots are
-       moved out (2,387 placements).
-   - `chapter_select.py` adds a nested chapter-select menu after the
-     adult-scenes question. Each entry sets the story flags you'd have earned
-     before that chapter, so jumping ahead doesn't trigger flag-gated bad endings.
-   - `normalize_text.py` replaces characters the 3DS system font may lack in
-     dialogue, choices and names: full-width forms become ASCII, `～`/`〜` become
-     `~`, and a few rare symbols get plain stand-ins.
+- `packs/g-senjou-no-maou-3ds.3vp`: for the 3DS (pictures scaled for its screen, sound
+  as Ogg Vorbis).
+- `packs/g-senjou-no-maou.3vp`: for PC and Wii U (full-resolution pictures in `hd/`,
+  the game's own audio unchanged).
+
+Copy one to `<3dvn root>/games/g-senjou-no-maou.3vp` (renaming the 3DS one). Settings:
+`WORK` (where the unpacked copy goes, default `steam-work`; reused on later runs),
+`OUT` (the game folder, default `voiced/g-senjou-no-maou`), `PACKS` (default `packs`;
+empty to skip packing).
+
+### What the steps do
+
+1. `extract_steam.py` unpacks the game's `.xp3` archives in Python (no Wine, GARbro or
+   KrkrExtract): the Steam release XORs each file with a byte taken from its checksum,
+   and every file is checked against that checksum. Scripts are written out as plain
+   text, and `tools/decode_tlg.py --compose` turns the TLG images into PNGs with each
+   expression pasted onto its body.
+2. `tools/import_gsenjou.py --steam` converts the scripts (the Steam English text), with
+   each spoken line's voice taken from the script itself. The game draws at 1280x720:
+   pictures are scaled by 1/3 for the 3DS (backgrounds 427x240, a few pixels cropped at
+   the sides of its 400-wide screen, shown whole on the Wii U's wide TV layout) and the
+   originals go to `hd/` for PC and Wii U. Sprites stand where the original puts them
+   (slot positions and per-character offsets from the game's `character_pos.tjs`).
+   Voices are stored in `audio/v/<group>/` folders of at most 100 files, because FAT32
+   slows down badly with one huge folder.
+3. Fixes and extras:
+   - `fix_scene.py` shows face portraits the original way. `@mface` and `@chr` only
+     remember a face; each line shows its speaker's remembered face (ADV mode only);
+     `@clear_mface` forgets them all. Every background change and chapter start also
+     hides all five sprite slots. It reads the speaker table from the game's `macro.ks`.
+   - `fix_leaked_commands.py` turns KiriKiri commands that ended up as dialogue back into
+     script (`@return`, `@fobgm`), and `[ font italic="true" ]` into `[i]` (italics on
+     PC and Wii U).
+   - `chapter_select.py` adds a nested chapter-select menu after the adult-scenes
+     question. Each entry sets the story flags you'd have earned before that chapter,
+     so jumping ahead doesn't trigger flag-gated bad endings.
+   - `normalize_text.py` replaces characters the 3DS system font may lack.
+   - `endings.txt` lists the seven endings for the endings checklist.
    - Every script is checked with `tests/check_scripts.c`.
+   - `make_loops.py` turns the loop points of looping sound effects (`*.ogg.sli`) into
+     `audio/<name>.loop` (rain, phone and other ambience).
+4. `tools/make_pack.py` packs the two archives.
 
-   `REPORT=silent.md python3 gsenjou-tools/add_voices.py ...` writes a report of
-   voiced lines that couldn't be matched, instead of building. To pin one by
-   hand, add `<voice><TAB><text found only in its build line>` to a local
-   `voice_overrides.tsv` (or point `VOICE_OVERRIDES` at it). Keep that file
-   local: it quotes dialogue.
+### Older builds from the fan dump
 
-## HD images for PC and Wii U (optional)
-
-The converted images are sized for the 3DS (backgrounds 320x240). With the game's
-original images decoded to PNG, `make_hd.py` builds `hd/`. `tools/decode_tlg.py`
-decodes the extracted `.tlg` files (TLG5, numpy + Pillow, no GARbro needed);
-`--compose` pastes expression layers onto their bodies using the `.pos` files:
-
-```sh
-python3 tools/decode_tlg.py decoded --compose \
-  --from extracted/bgimage --from extracted/evimage --from extracted/fgimage --from extracted/face
-python3 gsenjou-tools/make_hd.py voiced/g-senjou-no-maou decoded
-```
-
-The 3DS images are scaled-down crops of the originals (other 4:3 framing for
-backgrounds, upper bodies of full-length sprites), so each one is located in its
-original by template matching over scale and position, and accepted only if the
-match correlates well. Where the 4:3 version shows more than the 16:9 original
-(most CGs are zoomed out compared with Steam), the original is placed where it lines
-up and blended into the upscaled small image, which fills only the uncovered border.
-Cut-ins keep their small image. Face portraits use the whole original face (the converted
-ones were zoomed-in crops that cut off hair and chin); the small portrait is replaced by a
-matching version too, so the 3DS shows whole faces as well. With the Steam release about 2,010 images get HD
-versions: all sprites and faces and 295 of 305 backgrounds and CGs.
-Backgrounds that were redrawn for widescreen (objects moved or added) use the closest
-4:3 area of the new drawing, so they are framed slightly differently. Then pack two archives: with `hd/` for PC / Wii U, and
-`--exclude hd` for the 3DS.
-
-## Make the archives (recommended)
-
-After building the voiced game, one script does the rest in the right order:
-
-```sh
-DECODED=decoded ORIGINALS=path/to/extracted gsenjou-tools/make_archives.sh
-```
-
-1. `make_hd.py` (HD images and whole face portraits). It also replaces the small
-   portraits, which the 3DS uses, so it runs before packing either archive.
-   `make_loops.py` turns the loop points of looping sound effects (`sound/*.ogg.sli`)
-   into `audio/<name>.loop` files (rain, phone and other ambience: an intro, then the
-   loop section repeats until the script stops it).
-2. `packs/g-senjou-no-maou-3ds.3vp` (about 370 MB): no `hd/`, audio converted to Ogg.
-3. `packs/g-senjou-no-maou.3vp` (about 1.2 GB): `hd/` plus the original audio from your
-   copy unchanged (48 kHz voices, 44.1 kHz stereo music) for PC and Wii U.
-
-`ORIGINALS` is the folder holding your copy's `voice/`, `bgm/` and `sound/` folders,
-`DECODED` the output of `tools/decode_tlg.py` (above). Copy an archive to
-`<3dvn root>/games/g-senjou-no-maou.3vp` (renaming the 3DS one). Rebuilding the voiced
-game resets the portraits, so run `make_archives.sh` again after `build_voiced.sh`.
+Before the Steam tools, the game was built from a separate 800x600 fan dump
+(`import_gsenjou.py --src`), with voices lined up from the Steam scripts
+(`build_voiced.sh`, `add_voices.py`) and HD pictures matched in (`make_hd.py`,
+`make_archives.sh`). Those tools still work for such a dump but aren't needed with a
+Steam copy.
 
 ## Get it onto the 3DS
 
