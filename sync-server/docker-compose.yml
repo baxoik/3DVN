@@ -1,0 +1,22 @@
+# Game save sync server (FTP). Portainer: Stacks -> Add stack (Repository or Web editor).
+# Plain Docker: docker compose up -d --build   (in this folder)
+services:
+  game-sync:
+    build: .
+    image: game-sync-ftp:latest
+    container_name: game-sync
+    restart: unless-stopped
+    # Host networking: consoles get the box's own address for data connections,
+    # no port mapping needed. Ports used: 2121 and 30000-30009.
+    network_mode: host
+    volumes:
+      - game-sync-data:/data
+    environment:
+      FTP_PORT: "2121"
+      FTP_PASV_PORTS: "30000-30009"
+      # To require a login, set both (and enter them in 3DVN's settings/sync.cfg):
+      # FTP_USER: "sync"
+      # FTP_PASSWORD: "change-me"
+
+volumes:
+  game-sync-data:

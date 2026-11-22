@@ -72,6 +72,18 @@ Linux set Options → General → Audio API to **Cubeb**; with the Windows-only 
 Cemu hangs every homebrew title before its first frame. Screenshots from the test hook
 (`shot`) come out garbled on Wii U (pixel readback format); they are fine on PC.
 
+## Sync saves over the network (in game)
+
+**Sync Saves** (title menu and in-game menu) syncs the game's saves with a small FTP
+server on your network: [sync-server/](../sync-server/README.md) (a Docker container,
+also for ARM boards such as an ODROID or Raspberry Pi). Enter the server's address
+(`192.168.0.10:2121`) on the keypad; it is remembered in `settings/sync.cfg`. 3DVN then
+lists each save slot as newer here, newer on the server, or only on one side, and you
+choose **Pull** (the server's saves replace yours), **Push** (yours replace the server's)
+or **Newest of each**. Endings / unlocks and read lines are merged both ways. Saves are
+stored in the shared 3DS / Wii U format (older Wii U saves are converted), and every
+replaced file is kept once as `.bak`, on the console and on the server.
+
 ## Sharing saves between 3DS and Wii U
 
 Save files are the same on both: every 3DVN build from 2026-11-22 on writes them in one

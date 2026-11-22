@@ -26,6 +26,7 @@
 #include "wrap.h"
 #include "nvl_page.h"
 #include "pack.h"
+#include "ftp.h"
 
 /* The default 32 KB stack is too small for the script VM state. */
 u32 __stacksize__ = 256 * 1024;
@@ -166,11 +167,11 @@ typedef struct {
 
 typedef enum {
 	PANEL_NONE, PANEL_MENU, PANEL_BACKLOG, PANEL_SAVE, PANEL_LOAD, PANEL_GLOSSARY, PANEL_QUIT, PANEL_OPTIONS,
-	PANEL_ENDINGS, PANEL_GUIDE
+	PANEL_ENDINGS, PANEL_GUIDE, PANEL_SYNC
 } Panel;
 
 typedef enum { MODE_SELECT, MODE_TITLE, MODE_PLAY, MODE_ERROR } Mode;
-typedef enum { TITLE_START, TITLE_LOAD, TITLE_OPTIONS, TITLE_EXTRAS, TITLE_ENDINGS, TITLE_GUIDE } TitleItem;
+typedef enum { TITLE_START, TITLE_LOAD, TITLE_OPTIONS, TITLE_EXTRAS, TITLE_ENDINGS, TITLE_GUIDE, TITLE_SYNC } TitleItem;
 typedef enum {
 	PLAY_NONE, PLAY_TEXT, PLAY_MENU, PLAY_TIMER, PLAY_END, PLAY_VIDEO, PLAY_WAITBG, PLAY_GALLERY
 } Wait;
@@ -232,7 +233,7 @@ static int advance_visible;
 static int advance_available;
 static int menu_cursor;
 static int select_cursor;
-static int title_items[6], title_count, title_cursor;
+static int title_items[7], title_count, title_cursor;
 static int extras_available, extras_mode;
 static Panel panel;
 static int panel_cursor;
@@ -342,6 +343,8 @@ static struct { char name[GS_NAME_LEN]; long number; } globals[MAX_GLOBALS];
 static int global_count;
 
 static void draw_endings_top(void);
+static void draw_sync_top(void);
+static void sync_open(void);
 static void draw_guide_top(void);
 static void close_panel(void);
 
@@ -2285,6 +2288,7 @@ static void start_game(const char *name)
 		title_items[title_count++] = TITLE_EXTRAS;
 	}
 	if (ending_count > 0) title_items[title_count++] = TITLE_ENDINGS;
+	title_items[title_count++] = TITLE_SYNC;
 	title_cursor = 0;
 	refresh_slots();
 	mode = MODE_TITLE;
@@ -3601,6 +3605,7 @@ static const char *title_item_label(int item)
 	case TITLE_EXTRAS: return config.title_extras;
 	case TITLE_ENDINGS: return config.labels[LABEL_ENDINGS];
 	case TITLE_GUIDE: return config.labels[LABEL_GUIDE];
+	case TITLE_SYNC: return config.labels[LABEL_SYNC];
 	default: return "";
 	}
 }
@@ -3819,6 +3824,8 @@ static void draw_top(C3D_RenderTarget *target)
 			draw_options();
 		} else if (panel == PANEL_ENDINGS) {
 			draw_endings_top();
+		} else if (panel == PANEL_SYNC) {
+			draw_sync_top();
 		} else {
 			draw_title_menu();
 		}
@@ -3853,6 +3860,8 @@ static void draw_top(C3D_RenderTarget *target)
 		draw_options();
 	} else if (panel == PANEL_ENDINGS) {
 		draw_endings_top();
+	} else if (panel == PANEL_SYNC) {
+		draw_sync_top();
 	} else if (panel == PANEL_GUIDE) {
 		draw_guide_top();
 	} else if (ui_hidden) {
@@ -4499,6 +4508,671 @@ static void endings_input(u32 down, u32 repeat)
 	}
 }
 
+/* ---- Save sync with a game-sync FTP server (sync-server/) ----
+   Settings in SETTINGS_DIR/sync.cfg ("address 192.168.0.10:2121", optional "user ...",
+   "password ...", "folder /3dvn"). For the game being played: each save slot is
+   compared with the server's copy (the newer one by the time it was saved), then the
+   player picks Pull (server -> here), Push (here -> server) or Newest of each. Endings
+   and unlocks (.3vglobal) and read lines (.3vread) are merged both ways. Saves are
+   stored in the shared byte order; older Wii U saves are converted on the way. Every
+   replaced file keeps a .bak copy (here and on the server). */
+enum { SYNC_ADDRESS, SYNC_WORKING, SYNC_REVIEW, SYNC_DONE };
+enum { SYNC_SAME, SYNC_LOCAL_NEWER, SYNC_REMOTE_NEWER, SYNC_LOCAL_ONLY, SYNC_REMOTE_ONLY };
+enum { WORK_NONE, WORK_SCAN, WORK_PULL, WORK_PUSH, WORK_NEWEST };
+#define SYNC_KEYS 15
+
+typedef struct {
+	int slot, status;
+	long long local_time, remote_time;
+	unsigned char *remote;
+	size_t remote_size;
+} SyncItem;
+
+static int sync_step, sync_cursor, sync_work, sync_wait;
+static char sync_address[64], sync_user[48], sync_password[64], sync_folder[64] = "/3dvn";
+static char sync_message[220];
+static SyncItem sync_items[SAVE_SLOTS];
+static int sync_item_count, sync_differ;
+static const char *const sync_keys[SYNC_KEYS] = {"1", "2", "3", "Delete", "4", "5", "6", ".", "7", "8", "9", ":",
+	"Back", "0", "Connect"};
+
+static void sync_config_path(char *path, size_t size)
+{
+	snprintf(path, size, SETTINGS_DIR "/sync.cfg");
+}
+
+static void sync_load_config(void)
+{
+	char path[200], line[160];
+	sync_config_path(path, sizeof(path));
+	FILE *file = fopen(path, "r");
+	if (file == NULL) return;
+	while (fgets(line, sizeof(line), file) != NULL) {
+		char key[32], value[128];
+		if (sscanf(line, "%31s %127s", key, value) != 2) continue;
+		if (!strcmp(key, "address")) snprintf(sync_address, sizeof(sync_address), "%s", value);
+		else if (!strcmp(key, "user")) snprintf(sync_user, sizeof(sync_user), "%s", value);
+		else if (!strcmp(key, "password")) snprintf(sync_password, sizeof(sync_password), "%s", value);
+		else if (!strcmp(key, "folder")) snprintf(sync_folder, sizeof(sync_folder), "%s", value);
+	}
+	fclose(file);
+}
+
+static void sync_save_config(void)
+{
+	char path[200];
+	mkdir(ROOT_DIR, 0777);
+	mkdir(SETTINGS_DIR, 0777);
+	sync_config_path(path, sizeof(path));
+	FILE *file = fopen(path, "w");
+	if (file == NULL) return;
+	fprintf(file, "address %s\n", sync_address);
+	if (sync_user[0]) fprintf(file, "user %s\n", sync_user);
+	if (sync_password[0]) fprintf(file, "password %s\n", sync_password);
+	if (strcmp(sync_folder, "/3dvn")) fprintf(file, "folder %s\n", sync_folder);
+	fclose(file);
+}
+
+static void sync_free_items(void)
+{
+	for (int i = 0; i < sync_item_count; ++i) free(sync_items[i].remote);
+	memset(sync_items, 0, sizeof(sync_items));
+	sync_item_count = 0;
+}
+
+static void sync_open(void)
+{
+	sync_free_items();
+	sync_load_config();
+	sync_step = SYNC_ADDRESS;
+	sync_cursor = 14;   /* Connect */
+	sync_work = WORK_NONE;
+	sync_message[0] = '\0';
+}
+
+static unsigned char *read_local(const char *path, size_t *size)
+{
+	FILE *file = fopen(path, "rb");
+	if (file == NULL) return NULL;
+	fseek(file, 0, SEEK_END);
+	long length = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	unsigned char *data = length >= 0 && length < (4L << 20) ? malloc((size_t)length + 1) : NULL;
+	if (data != NULL && fread(data, 1, (size_t)length, file) != (size_t)length) {
+		free(data);
+		data = NULL;
+	}
+	fclose(file);
+	if (data != NULL) {
+		data[length] = '\0';
+		*size = (size_t)length;
+	}
+	return data;
+}
+
+/* Writes a file, keeping the old one as .bak. */
+static int write_local(const char *path, const unsigned char *data, size_t size)
+{
+	char temporary[230], backup[230];
+	snprintf(temporary, sizeof(temporary), "%s.new", path);
+	snprintf(backup, sizeof(backup), "%s.bak", path);
+	mkdir(ROOT_DIR, 0777);   /* a console that never saved has no folders yet */
+	mkdir(SAVES_DIR, 0777);
+	mkdir(SETTINGS_DIR, 0777);
+	FILE *file = fopen(temporary, "wb");
+	if (file == NULL) return -1;
+	int ok = fwrite(data, 1, size, file) == size;
+	ok = fclose(file) == 0 && ok;
+	if (!ok) {
+		remove(temporary);
+		return -1;
+	}
+	remove(backup);
+	rename(path, backup);
+	return rename(temporary, path) == 0 ? 0 : -1;
+}
+
+/* When a save was made, read in either byte order; 0 if the data is not a save. */
+static long long save_data_time(const unsigned char *data, size_t size)
+{
+	if (data == NULL || size < sizeof(SaveHeader)) return 0;
+	SaveHeader header;
+	memcpy(&header, data, sizeof(header));
+	return header_from_file(&header) ? header.saved_at : 0;
+}
+
+/* A save in the shared format (the byte order every console reads); other data as is. */
+static unsigned char *portable_save(const unsigned char *data, size_t size)
+{
+	unsigned char *out = malloc(size ? size : 1);
+	if (out == NULL) return NULL;
+	memcpy(out, data, size);
+	if (size < sizeof(SaveData)) return out;
+	SaveData *save = malloc(sizeof(*save));
+	if (save == NULL) return out;
+	memcpy(save, data, sizeof(*save));
+	if (save_from_file(save)) {
+		event_head_to_file(save);
+		if (host_big_endian()) swap_save(save);
+		memcpy(out, save, sizeof(*save));
+	}
+	free(save);
+	return out;
+}
+
+/* Endings and unlocks: every flag keeps its highest value from either side. */
+static char *merge_globals_text(const char *a, const char *b)
+{
+	enum { MAX_FLAGS = 256 };
+	static char names[MAX_FLAGS][GS_NAME_LEN];
+	static long values[MAX_FLAGS];
+	int count = 0;
+	const char *texts[2] = {a, b};
+	for (int t = 0; t < 2; ++t) {
+		const char *p = texts[t];
+		while (p != NULL && *p) {
+			char name[GS_NAME_LEN];
+			long value;
+			if (sscanf(p, "%31s %ld", name, &value) == 2 && is_global_name(name)) {
+				int found = -1;
+				for (int i = 0; i < count && found < 0; ++i) if (!strcmp(names[i], name)) found = i;
+				if (found >= 0) {
+					if (value > values[found]) values[found] = value;
+				} else if (count < MAX_FLAGS) {
+					snprintf(names[count], GS_NAME_LEN, "%s", name);
+					values[count++] = value;
+				}
+			}
+			p = strchr(p, '\n');
+			if (p) ++p;
+		}
+	}
+	char *out = malloc((size_t)count * (GS_NAME_LEN + 24) + 1);
+	if (out == NULL) return NULL;
+	size_t used = 0;
+	out[0] = '\0';
+	for (int i = 0; i < count; ++i) used += (size_t)sprintf(out + used, "%s %ld\n", names[i], values[i]);
+	return out;
+}
+
+/* Read lines: records [length][name][u32 size, little-endian][bits]; bits OR-ed. */
+static unsigned char *merge_read_marks(const unsigned char *a, size_t a_size, const unsigned char *b,
+	size_t b_size, size_t *out_size)
+{
+	enum { MAX_MAPS = 512 };
+	static const unsigned char *names[MAX_MAPS], *bits[MAX_MAPS][2];
+	static unsigned name_len[MAX_MAPS], bit_len[MAX_MAPS][2];
+	int count = 0;
+	const unsigned char *data[2] = {a, b};
+	size_t sizes[2] = {a_size, b_size};
+	memset(bits, 0, sizeof(bits));
+	memset(bit_len, 0, sizeof(bit_len));
+	for (int side = 0; side < 2; ++side) {
+		size_t pos = 0;
+		while (data[side] != NULL && pos + 5 <= sizes[side]) {
+			unsigned length = data[side][pos];
+			if (pos + 1 + length + 4 > sizes[side]) break;
+			const unsigned char *name = data[side] + pos + 1, *s = name + length;
+			unsigned size = s[0] | s[1] << 8 | s[2] << 16 | (unsigned)s[3] << 24;
+			if (pos + 5 + length + size > sizes[side]) break;
+			int found = -1;
+			for (int i = 0; i < count && found < 0; ++i) {
+				if (name_len[i] == length && !memcmp(names[i], name, length)) found = i;
+			}
+			if (found < 0 && count < MAX_MAPS) {
+				found = count++;
+				names[found] = name;
+				name_len[found] = length;
+			}
+			if (found >= 0) {
+				bits[found][side] = s + 4;
+				bit_len[found][side] = size;
+			}
+			pos += 5 + length + size;
+		}
+	}
+	size_t total = 0;
+	for (int i = 0; i < count; ++i) {
+		unsigned size = bit_len[i][0] > bit_len[i][1] ? bit_len[i][0] : bit_len[i][1];
+		total += 5 + name_len[i] + size;
+	}
+	unsigned char *out = malloc(total ? total : 1);
+	if (out == NULL) return NULL;
+	size_t used = 0;
+	for (int i = 0; i < count; ++i) {
+		unsigned size = bit_len[i][0] > bit_len[i][1] ? bit_len[i][0] : bit_len[i][1];
+		out[used++] = (unsigned char)name_len[i];
+		memcpy(out + used, names[i], name_len[i]);
+		used += name_len[i];
+		out[used++] = (unsigned char)size;
+		out[used++] = (unsigned char)(size >> 8);
+		out[used++] = (unsigned char)(size >> 16);
+		out[used++] = (unsigned char)(size >> 24);
+		for (unsigned k = 0; k < size; ++k) {
+			unsigned char x = k < bit_len[i][0] ? bits[i][0][k] : 0, y = k < bit_len[i][1] ? bits[i][1][k] : 0;
+			out[used++] = x | y;
+		}
+	}
+	*out_size = used;
+	return out;
+}
+
+static int sync_connect(FtpConn *ftp)
+{
+	char host[64];
+	int port = 2121;
+	snprintf(host, sizeof(host), "%s", sync_address);
+	char *colon = strchr(host, ':');
+	if (colon != NULL) {
+		*colon = '\0';
+		port = atoi(colon + 1);
+	}
+	if (host[0] == '\0' || port <= 0) {
+		snprintf(sync_message, sizeof(sync_message), "Enter the server's address, e.g. 192.168.0.10:2121");
+		return -1;
+	}
+	if (ftp_net_init() != 0) {
+		snprintf(sync_message, sizeof(sync_message), "Couldn't start the network. Is Wi-Fi on?");
+		return -1;
+	}
+	if (ftp_connect(ftp, host, port, sync_user, sync_password) != 0) {
+		snprintf(sync_message, sizeof(sync_message), "%s: %s", sync_address, ftp->error);
+		ftp_net_exit();
+		return -1;
+	}
+	return 0;
+}
+
+static void sync_remote_path(char *path, size_t size, const char *folder, const char *name)
+{
+	snprintf(path, size, "%s/%s/%s", sync_folder, folder, name);
+}
+
+static void slot_file_name(int slot, char *name, size_t size)
+{
+	snprintf(name, size, "%s_%d" SAVE_EXT, game_name, slot + 1);
+}
+
+/* Whether "NAME\n" is one of the lines of a listing. */
+static int in_listing(const char *listing, const char *line)
+{
+	size_t length = strlen(line);
+	for (const char *p = listing; (p = strstr(p, line)) != NULL; p += length) {
+		if (p == listing || p[-1] == '\n') return 1;
+	}
+	return 0;
+}
+
+/* Compares every slot with the server; fills sync_items. */
+static void sync_scan(void)
+{
+	FtpConn ftp;
+	sync_free_items();
+	if (sync_connect(&ftp) != 0) {
+		sync_step = SYNC_ADDRESS;
+		return;
+	}
+	char folder[128];
+	snprintf(folder, sizeof(folder), "%s/saves", sync_folder);
+	static char listing[16384];
+	if (ftp_list(&ftp, folder, listing, sizeof(listing)) < 0) {
+		snprintf(sync_message, sizeof(sync_message), "%s", ftp.error);
+		ftp_close(&ftp);
+		ftp_net_exit();
+		sync_step = SYNC_ADDRESS;
+		return;
+	}
+	sync_differ = 0;
+	for (int slot = 0; slot < SAVE_SLOTS; ++slot) {
+		char name[160], local_path[200], remote_path[260], wanted[170];
+		slot_file_name(slot, name, sizeof(name));
+		save_path(slot, local_path, sizeof(local_path));
+		snprintf(wanted, sizeof(wanted), "%s\n", name);
+		size_t local_size = 0;
+		unsigned char *local = read_local(local_path, &local_size);
+		int on_server = in_listing(listing, wanted);
+		SyncItem item = {slot, SYNC_SAME, save_data_time(local, local_size), 0, NULL, 0};
+		if (on_server) {
+			sync_remote_path(remote_path, sizeof(remote_path), "saves", name);
+			if (ftp_get(&ftp, remote_path, &item.remote, &item.remote_size) == 0) {
+				item.remote_time = save_data_time(item.remote, item.remote_size);
+			}
+		}
+		if (local == NULL && item.remote == NULL) continue;
+		if (local == NULL) item.status = SYNC_REMOTE_ONLY;
+		else if (item.remote == NULL) item.status = SYNC_LOCAL_ONLY;
+		else if (local_size == item.remote_size && !memcmp(local, item.remote, local_size)) item.status = SYNC_SAME;
+		else if (item.local_time == item.remote_time) {
+			/* the same save in the other byte order (an older Wii U save) */
+			unsigned char *a = portable_save(local, local_size), *b = portable_save(item.remote, item.remote_size);
+			item.status = a && b && !memcmp(a, b, local_size) ? SYNC_SAME : SYNC_LOCAL_NEWER;
+			free(a);
+			free(b);
+		} else {
+			item.status = item.local_time > item.remote_time ? SYNC_LOCAL_NEWER : SYNC_REMOTE_NEWER;
+		}
+		free(local);
+		if (item.status != SYNC_SAME) ++sync_differ;
+		sync_items[sync_item_count++] = item;
+	}
+	ftp_close(&ftp);
+	ftp_net_exit();
+	sync_step = SYNC_REVIEW;
+	/* suggest the direction the differences point to */
+	int remote = 0, local = 0;
+	for (int i = 0; i < sync_item_count; ++i) {
+		int s = sync_items[i].status;
+		remote += s == SYNC_REMOTE_NEWER || s == SYNC_REMOTE_ONLY;
+		local += s == SYNC_LOCAL_NEWER || s == SYNC_LOCAL_ONLY;
+	}
+	sync_cursor = remote && !local ? 0 : local && !remote ? 1 : 2;
+	sync_message[0] = '\0';
+}
+
+/* Merges a file that both sides add to (globals, read lines) and writes it both ways. */
+static void sync_merge_file(FtpConn *ftp, const char *local_path, const char *folder, const char *name,
+	int is_text, int *changed)
+{
+	char remote_path[260];
+	sync_remote_path(remote_path, sizeof(remote_path), folder, name);
+	size_t local_size = 0, remote_size = 0, merged_size = 0;
+	unsigned char *local = read_local(local_path, &local_size), *remote = NULL;
+	if (ftp_get(ftp, remote_path, &remote, &remote_size) != 0) remote = NULL;
+	if (local == NULL && remote == NULL) return;
+	unsigned char *merged;
+	if (is_text) {
+		merged = (unsigned char *)merge_globals_text(local ? (char *)local : "", remote ? (char *)remote : "");
+		merged_size = merged ? strlen((char *)merged) : 0;
+	} else {
+		merged = merge_read_marks(local, local_size, remote, remote_size, &merged_size);
+	}
+	if (merged != NULL) {
+		if (local == NULL || local_size != merged_size || memcmp(local, merged, merged_size)) {
+			if (write_local(local_path, merged, merged_size) == 0) ++*changed;
+		}
+		if (remote == NULL || remote_size != merged_size || memcmp(remote, merged, merged_size)) {
+			if (ftp_put(ftp, remote_path, merged, merged_size) == 0) ++*changed;
+		}
+	}
+	free(local);
+	free(remote);
+	free(merged);
+}
+
+static void sync_apply(int work)
+{
+	FtpConn ftp;
+	if (sync_connect(&ftp) != 0) {
+		sync_step = SYNC_DONE;
+		return;
+	}
+	char folder[128];
+	ftp_mkdir(&ftp, sync_folder);
+	snprintf(folder, sizeof(folder), "%s/saves", sync_folder);
+	ftp_mkdir(&ftp, folder);
+	snprintf(folder, sizeof(folder), "%s/settings", sync_folder);
+	ftp_mkdir(&ftp, folder);
+	int pulled = 0, pushed = 0, failed = 0, merged = 0;
+	for (int i = 0; i < sync_item_count; ++i) {
+		SyncItem *item = &sync_items[i];
+		if (item->status == SYNC_SAME) continue;
+		int remote_wins = item->status == SYNC_REMOTE_NEWER || item->status == SYNC_REMOTE_ONLY;
+		int pull = work == WORK_PULL ? item->remote != NULL
+			: work == WORK_PUSH ? 0 : remote_wins;
+		int push = work == WORK_PUSH ? item->status != SYNC_REMOTE_ONLY
+			: work == WORK_PULL ? 0 : !remote_wins;
+		char name[160], local_path[200], remote_path[260];
+		slot_file_name(item->slot, name, sizeof(name));
+		save_path(item->slot, local_path, sizeof(local_path));
+		sync_remote_path(remote_path, sizeof(remote_path), "saves", name);
+		if (pull) {
+			unsigned char *data = portable_save(item->remote, item->remote_size);
+			if (data != NULL && write_local(local_path, data, item->remote_size) == 0) ++pulled;
+			else ++failed;
+			free(data);
+		} else if (push) {
+			size_t size = 0;
+			unsigned char *local = read_local(local_path, &size);
+			unsigned char *data = local ? portable_save(local, size) : NULL;
+			if (data != NULL && ftp_put(&ftp, remote_path, data, size) == 0) ++pushed;
+			else ++failed;
+			free(local);
+			free(data);
+		}
+	}
+	/* endings / unlocks and read lines: merged both ways (flush ours first) */
+	read_save();
+	char local_path[220], name[160];
+	globals_path(local_path, sizeof(local_path));
+	snprintf(name, sizeof(name), "%s.3vglobal", game_name);
+	sync_merge_file(&ftp, local_path, "saves", name, 1, &merged);
+	read_path(local_path, sizeof(local_path));
+	snprintf(name, sizeof(name), "%s.3vread", game_name);
+	sync_merge_file(&ftp, local_path, "settings", name, 0, &merged);
+	ftp_close(&ftp);
+	ftp_net_exit();
+	globals_load();
+	read_load();
+	refresh_slots();
+	sync_free_items();
+	if (failed) {
+		snprintf(sync_message, sizeof(sync_message), "%d save(s) downloaded, %d uploaded, %d failed: %s",
+			pulled, pushed, failed, ftp.error[0] ? ftp.error : "could not write");
+	} else if (pulled + pushed == 0) {
+		snprintf(sync_message, sizeof(sync_message), "Saves were already the same%s.",
+			merged ? "; endings and read lines merged" : "");
+	} else {
+		snprintf(sync_message, sizeof(sync_message), "Done: %d save(s) downloaded, %d uploaded%s.",
+			pulled, pushed, merged ? "; endings and read lines merged" : "");
+	}
+	sync_step = SYNC_DONE;
+}
+
+static void sync_start(int work, const char *message)
+{
+	sync_work = work;
+	sync_wait = 2;   /* draw the "working" screen before blocking on the network */
+	snprintf(sync_message, sizeof(sync_message), "%s", message);
+	sync_step = SYNC_WORKING;
+}
+
+static int sync_review_labels(const char **labels, char text[3][48])
+{
+	int pull = 0, push = 0;
+	for (int i = 0; i < sync_item_count; ++i) {
+		int s = sync_items[i].status;
+		pull += s != SYNC_SAME && sync_items[i].remote != NULL;
+		push += s != SYNC_SAME && s != SYNC_REMOTE_ONLY;
+	}
+	snprintf(text[0], 48, "Pull from server (%d)", pull);
+	snprintf(text[1], 48, "Push to server (%d)", push);
+	snprintf(text[2], 48, "Newest of each");
+	for (int i = 0; i < 3; ++i) labels[i] = text[i];
+	return 3;
+}
+
+static void sync_keypad_buttons(Button *buttons)
+{
+	const float gap = 6.0f, top = 64.0f, h = 32.0f;
+	const float w = (BOTTOM_W - 28.0f - 3 * gap) / 4.0f;
+	for (int i = 0; i < SYNC_KEYS; ++i) {
+		int row = i / 4, col = i % 4;
+		buttons[i] = (Button){14.0f + col * (w + gap), top + row * (h + gap), i == 14 ? 2 * w + gap : w, h, sync_keys[i]};
+	}
+}
+
+static void sync_key(int key)
+{
+	size_t length = strlen(sync_address);
+	if (key == 3) {
+		if (length > 0) sync_address[length - 1] = '\0';
+	} else if (key == 12) {
+		close_panel();
+	} else if (key == 14) {
+		sync_save_config();
+		sync_start(WORK_SCAN, "Connecting to the server...");
+	} else if (length + 1 < sizeof(sync_address) && length < 21) {
+		sync_address[length] = sync_keys[key][0];
+		sync_address[length + 1] = '\0';
+	}
+}
+
+static void sync_input(u32 down, u32 repeat)
+{
+	touchPosition touch;
+	if (sync_step == SYNC_WORKING) {
+		if (sync_wait > 0 && --sync_wait == 0) {
+			int work = sync_work;
+			sync_work = WORK_NONE;
+			if (work == WORK_SCAN) sync_scan();
+			else sync_apply(work);
+		}
+		return;
+	}
+	if (sync_step == SYNC_ADDRESS) {
+		Button buttons[SYNC_KEYS];
+		sync_keypad_buttons(buttons);
+		if (down & KEY_B) {
+			if (sync_address[0]) sync_key(3);
+			else close_panel();
+			return;
+		}
+		if (down & KEY_START) return;
+		if (repeat & KEY_DRIGHT) sync_cursor = sync_cursor == 13 ? 14 : (sync_cursor + 1) % SYNC_KEYS;
+		if (repeat & KEY_DLEFT) sync_cursor = sync_cursor == 0 ? 14 : sync_cursor - 1;
+		if (repeat & KEY_DDOWN) sync_cursor = sync_cursor + 4 < SYNC_KEYS ? sync_cursor + 4 : sync_cursor % 4;
+		if (repeat & KEY_DUP) sync_cursor = sync_cursor >= 4 ? sync_cursor - 4 : (sync_cursor + 12 < SYNC_KEYS ? sync_cursor + 12 : 14);
+		if (down & KEY_Y) sync_key(3);
+		if (down & KEY_A) sync_key(sync_cursor);
+		if (down & KEY_TOUCH) {
+			hidTouchRead(&touch);
+			int hit = hit_button(buttons, SYNC_KEYS, &touch);
+			if (hit >= 0) {
+				sync_cursor = hit;
+				sync_key(hit);
+			}
+		}
+		return;
+	}
+	if (sync_step == SYNC_REVIEW) {
+		const char *labels[3];
+		char text[3][48];
+		int count = sync_review_labels(labels, text);
+		if (down & KEY_B) {
+			sync_free_items();
+			close_panel();
+			return;
+		}
+		if (repeat & KEY_DDOWN) sync_cursor = (sync_cursor + 1) % (count + 1);
+		if (repeat & KEY_DUP) sync_cursor = (sync_cursor + count) % (count + 1);
+		int chosen = -1;
+		if (down & KEY_A) chosen = sync_cursor;
+		if (down & KEY_TOUCH) {
+			hidTouchRead(&touch);
+			Button buttons[LABEL_COUNT + 2];
+			chosen = hit_button(buttons, touch_list_buttons(buttons, labels, count, "Cancel"), &touch);
+		}
+		if (chosen == 0) sync_start(WORK_PULL, "Downloading from the server...");
+		else if (chosen == 1) sync_start(WORK_PUSH, "Uploading to the server...");
+		else if (chosen == 2) sync_start(WORK_NEWEST, "Syncing...");
+		else if (chosen == 3) {
+			sync_free_items();
+			close_panel();
+		}
+		return;
+	}
+	if (down & (KEY_A | KEY_B | KEY_TOUCH)) close_panel();   /* SYNC_DONE */
+}
+
+static const char *sync_status_text(int status)
+{
+	switch (status) {
+	case SYNC_LOCAL_NEWER: return "newer here";
+	case SYNC_REMOTE_NEWER: return "newer on server";
+	case SYNC_LOCAL_ONLY: return "only here";
+	case SYNC_REMOTE_ONLY: return "only on server";
+	default: return "same";
+	}
+}
+
+static void format_time(long long when, char *out, size_t size)
+{
+	time_t t = (time_t)when;
+	struct tm *parts = when ? localtime(&t) : NULL;
+	if (parts == NULL) snprintf(out, size, "-");
+	else strftime(out, size, "%m-%d %H:%M", parts);
+}
+
+static void draw_sync_top(void)
+{
+	const u32 dim = C2D_Color32(150, 170, 165, 255);
+	draw_backdrop(IMG_MENU_BG, 235);
+	float x = SCENE_X + 24.0f;
+	draw_line("Sync saves", x, 8, 0.6f, theme_accent(), Z_OVERLAY_TEXT, 0.0f);
+	if (sync_step == SYNC_ADDRESS) {
+		char line[96];
+		snprintf(line, sizeof(line), "Server: %s_", sync_address);
+		draw_line(line, x, 44, 0.55f, theme_text(), Z_OVERLAY_TEXT, 352.0f);
+		draw_wrapped("The game-sync FTP server on your network (see sync-server/README.md). "
+			"Type its address on the touch screen; the port is 2121 unless you changed it.",
+			x, 76, 352.0f, 0.42f, dim, Z_OVERLAY_TEXT);
+		if (sync_message[0]) draw_wrapped(sync_message, x, 150, 352.0f, 0.44f, C2D_Color32(255, 170, 140, 255), Z_OVERLAY_TEXT);
+		draw_line("D-pad + A or touch   Y delete   B back", x, 222, 0.4f, dim, Z_OVERLAY_TEXT, 0.0f);
+		return;
+	}
+	if (sync_step == SYNC_REVIEW) {
+		char line[128];
+		snprintf(line, sizeof(line), "%s - %d slot(s) differ", sync_address, sync_differ);
+		draw_line(line, x, 32, 0.42f, dim, Z_OVERLAY_TEXT, 352.0f);
+		const float columns[4] = {0.0f, 40.0f, 130.0f, 220.0f};
+		const char *heads[4] = {"Slot", "Here", "Server", ""};
+		for (int c = 0; c < 3; ++c) draw_line(heads[c], x + columns[c], 50, 0.42f, theme_accent(), Z_OVERLAY_TEXT, 0.0f);
+		int row = 0;
+		for (int i = 0; i < sync_item_count && row < 9; ++i, ++row) {
+			char cells[4][32];
+			snprintf(cells[0], sizeof(cells[0]), "%d", sync_items[i].slot + 1);
+			format_time(sync_items[i].local_time, cells[1], sizeof(cells[1]));
+			format_time(sync_items[i].remote_time, cells[2], sizeof(cells[2]));
+			snprintf(cells[3], sizeof(cells[3]), "%s", sync_status_text(sync_items[i].status));
+			u32 color = sync_items[i].status == SYNC_SAME ? dim : theme_text();
+			for (int c = 0; c < 4; ++c) draw_line(cells[c], x + columns[c], 66 + row * 15, 0.42f, color, Z_OVERLAY_TEXT, 0.0f);
+		}
+		if (sync_item_count == 0) draw_line("No saves here or on the server yet.", x, 70, 0.45f, theme_text(), Z_OVERLAY_TEXT, 0.0f);
+		draw_wrapped("Pull: the server's saves replace yours. Push: yours replace the server's. Endings and "
+			"read lines are merged either way. Replaced files are kept as .bak.",
+			x, 204, 352.0f, 0.36f, dim, Z_OVERLAY_TEXT);
+		return;
+	}
+	draw_wrapped(sync_message, x, 60, 352.0f, 0.5f, theme_text(), Z_OVERLAY_TEXT);
+	if (sync_step == SYNC_DONE) draw_line("A / B close", x, 222, 0.4f, dim, Z_OVERLAY_TEXT, 0.0f);
+}
+
+static void draw_sync_bottom(void)
+{
+	const u32 dim = C2D_Color32(150, 170, 165, 255);
+	if (sync_step == SYNC_ADDRESS) {
+		draw_line("Server address", 14, 6, 0.55f, theme_accent(), Z_TEXT, 0.0f);
+		rect(14, 30, BOTTOM_W - 28, 26, theme_item(), Z_BOX);
+		char shown[80];
+		snprintf(shown, sizeof(shown), "%s_", sync_address);
+		draw_line(shown, 22, 34, 0.55f, theme_text(), Z_TEXT, BOTTOM_W - 44);
+		Button buttons[SYNC_KEYS];
+		sync_keypad_buttons(buttons);
+		for (int i = 0; i < SYNC_KEYS; ++i) draw_button_box(&buttons[i], i == sync_cursor);
+		return;
+	}
+	if (sync_step == SYNC_REVIEW) {
+		const char *labels[3];
+		char text[3][48];
+		int count = sync_review_labels(labels, text);
+		draw_touch_list("Sync saves", labels, count, sync_cursor, "Cancel");
+		return;
+	}
+	draw_line("Sync saves", 14, 6, 0.55f, theme_accent(), Z_TEXT, 0.0f);
+	draw_wrapped(sync_message, 14, 40, BOTTOM_W - 28, 0.45f, sync_step == SYNC_DONE ? theme_text() : dim, Z_TEXT);
+	if (sync_step == SYNC_DONE) draw_line("Tap or press A to close", 14, 216, 0.42f, dim, Z_TEXT, 0.0f);
+}
+
 static void draw_bottom(C3D_RenderTarget *target)
 {
 	C2D_TargetClear(target, config.has_bg ? rgb_color(config.bg, 255) : C2D_Color32(17, 29, 34, 255));
@@ -4536,6 +5210,10 @@ static void draw_bottom(C3D_RenderTarget *target)
 	}
 	if (panel == PANEL_ENDINGS && (mode == MODE_TITLE || mode == MODE_PLAY)) {
 		draw_endings_list(0.0f, BOTTOM_W, 1);
+		return;
+	}
+	if (panel == PANEL_SYNC && (mode == MODE_TITLE || mode == MODE_PLAY)) {
+		draw_sync_bottom();
 		return;
 	}
 	if (panel == PANEL_GUIDE && (mode == MODE_TITLE || mode == MODE_PLAY)) {
@@ -4705,7 +5383,7 @@ static void open_panel(Panel which)
 	if (which == PANEL_MENU) {
 		menu_count = 0;
 		static const int order[] = {LABEL_SAVE, LABEL_LOAD, LABEL_BACKLOG, LABEL_GLOSSARY,
-			LABEL_ENDINGS, LABEL_GUIDE, LABEL_OPTIONS, LABEL_QUIT};
+			LABEL_ENDINGS, LABEL_GUIDE, LABEL_SYNC, LABEL_OPTIONS, LABEL_QUIT};
 		for (int i = 0; i < LABEL_COUNT; ++i) {
 			int item = order[i];
 			if ((item == LABEL_GLOSSARY && glossary.count == 0) || (item == LABEL_ENDINGS && ending_count == 0)
@@ -4721,6 +5399,8 @@ static void open_panel(Panel which)
 		panel_cursor = 0;
 	} else if (which == PANEL_ENDINGS) {
 		ending_top = 0;
+	} else if (which == PANEL_SYNC) {
+		sync_open();
 	} else if (which == PANEL_GUIDE) {
 		guide_drag = 0;
 		if (!guide_load()) {
@@ -4758,6 +5438,7 @@ static void choose_menu_item(int index)
 	case LABEL_OPTIONS: open_panel(PANEL_OPTIONS); break;
 	case LABEL_ENDINGS: open_panel(PANEL_ENDINGS); break;
 	case LABEL_GUIDE: open_panel(PANEL_GUIDE); break;
+	case LABEL_SYNC: open_panel(PANEL_SYNC); break;
 	default: open_panel(PANEL_QUIT); break;
 	}
 }
@@ -4776,6 +5457,9 @@ static void choose_title_item(void)
 		break;
 	case TITLE_GUIDE:
 		open_panel(PANEL_GUIDE);
+		break;
+	case TITLE_SYNC:
+		open_panel(PANEL_SYNC);
 		break;
 	case TITLE_OPTIONS:
 		open_panel(PANEL_OPTIONS);
@@ -4886,6 +5570,9 @@ static void handle_panel_input(u32 down, u32 repeat)
 	}
 	case PANEL_ENDINGS:
 		endings_input(down, repeat);
+		break;
+	case PANEL_SYNC:
+		sync_input(down, repeat);
 		break;
 	case PANEL_GUIDE:
 		guide_input(down, repeat);

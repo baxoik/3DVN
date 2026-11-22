@@ -6,7 +6,7 @@
 > - TV + GamePad: the scene on the TV at 1080p (or 720p), controls, menus, save slots, backlog and choices as touch buttons on the GamePad at its full resolution. Optional wide TV layout (text box and menus use the full 16:9 width; pictures keep their shape).
 > - Off-TV play: Minus puts everything on the GamePad.
 > - Leave to the Homebrew Launcher or the Wii U Menu (START, or the in-game Quit).
-> - Saves shared with the 3DS version: `tools/sync_saves.py` syncs them over FTP.
+> - Saves shared with the 3DS version: **Sync Saves** in the game menu syncs them with a small FTP server on your network ([sync-server/](sync-server/README.md), a Docker container that also runs on ARM boards such as an ODROID); `tools/sync_saves.py` does the same from a PC.
 > - Guide reader (`games/<name>.txt`, read on the GamePad, swipe to scroll, remembers your place), endings checklist, playtime and clock, GamePad backlog with voice replay.
 >
 > **Engine (all platforms)**
