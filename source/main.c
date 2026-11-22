@@ -305,6 +305,8 @@ static struct { char name[GS_NAME_LEN]; long number; } globals[MAX_GLOBALS];
 static int global_count;
 
 static void draw_endings_top(void);
+static void autosync_request(void);
+static void autosync_finish(void);
 static void draw_sync_top(void);
 static void sync_open(void);
 static void draw_guide_top(void);
@@ -541,6 +543,7 @@ static void record_story_end(void)
 	if (dot != NULL && dot > name + 6) *dot = '\0';
 	gs_variable_set_number(&state, name, 1);
 	globals_sync();
+	autosync_request();
 }
 
 /* ---- Guide: games/<game>.txt, read on the bottom screen ---- */
@@ -1667,6 +1670,7 @@ static int save_slot(int slot)
 	last_slot = slot;
 	read_save();
 	snprintf(notice, sizeof(notice), "Saved to slot %d", slot + 1);
+	autosync_request();
 	return 1;
 }
 
@@ -2106,6 +2110,7 @@ static void start_game(const char *name)
 	last_activity = now_ms();
 	endings_load();
 	guide_find();
+	autosync_request();   /* newer saves from the server, if auto sync is on */
 	gs_state_init(program, &state);
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
@@ -4352,6 +4357,7 @@ static void endings_input(u32 down, u32 repeat)
    and unlocks (.3vglobal) and read lines (.3vread) are merged both ways. Saves are
    stored in the shared byte order; older Wii U saves are converted on the way. Every
    replaced file keeps a .bak copy (here and on the server). */
+static int autosync_enabled;   /* see Auto sync below */
 enum { SYNC_ADDRESS, SYNC_WORKING, SYNC_REVIEW, SYNC_DONE };
 enum { SYNC_SAME, SYNC_LOCAL_NEWER, SYNC_REMOTE_NEWER, SYNC_LOCAL_ONLY, SYNC_REMOTE_ONLY };
 enum { WORK_NONE, WORK_SCAN, WORK_PULL, WORK_PUSH, WORK_NEWEST };
@@ -4390,6 +4396,7 @@ static void sync_load_config(void)
 		else if (!strcmp(key, "user")) snprintf(sync_user, sizeof(sync_user), "%s", value);
 		else if (!strcmp(key, "password")) snprintf(sync_password, sizeof(sync_password), "%s", value);
 		else if (!strcmp(key, "folder")) snprintf(sync_folder, sizeof(sync_folder), "%s", value);
+		else if (!strcmp(key, "auto")) autosync_enabled = atoi(value) != 0;
 	}
 	fclose(file);
 }
@@ -4406,6 +4413,7 @@ static void sync_save_config(void)
 	if (sync_user[0]) fprintf(file, "user %s\n", sync_user);
 	if (sync_password[0]) fprintf(file, "password %s\n", sync_password);
 	if (strcmp(sync_folder, "/3dvn")) fprintf(file, "folder %s\n", sync_folder);
+	if (autosync_enabled) fprintf(file, "auto 1\n");
 	fclose(file);
 }
 
@@ -4418,6 +4426,7 @@ static void sync_free_items(void)
 
 static void sync_open(void)
 {
+	autosync_finish();   /* never two syncs at once */
 	sync_free_items();
 	sync_load_config();
 	sync_step = SYNC_ADDRESS;
@@ -4804,7 +4813,7 @@ static void sync_start(int work, const char *message)
 	sync_step = SYNC_WORKING;
 }
 
-static int sync_review_labels(const char **labels, char text[3][48])
+static int sync_review_labels(const char **labels, char text[4][48])
 {
 	int pull = 0, push = 0;
 	for (int i = 0; i < sync_item_count; ++i) {
@@ -4815,8 +4824,9 @@ static int sync_review_labels(const char **labels, char text[3][48])
 	snprintf(text[0], 48, "Pull from server (%d)", pull);
 	snprintf(text[1], 48, "Push to server (%d)", push);
 	snprintf(text[2], 48, "Newest of each");
-	for (int i = 0; i < 3; ++i) labels[i] = text[i];
-	return 3;
+	snprintf(text[3], 48, "Auto sync while playing: %s", autosync_enabled ? "On" : "Off");
+	for (int i = 0; i < 4; ++i) labels[i] = text[i];
+	return 4;
 }
 
 static void sync_keypad_buttons(Button *buttons)
@@ -4883,8 +4893,8 @@ static void sync_input(u32 down, u32 repeat)
 		return;
 	}
 	if (sync_step == SYNC_REVIEW) {
-		const char *labels[3];
-		char text[3][48];
+		const char *labels[4];
+		char text[4][48];
 		int count = sync_review_labels(labels, text);
 		if (down & KEY_B) {
 			sync_free_items();
@@ -4903,7 +4913,10 @@ static void sync_input(u32 down, u32 repeat)
 		if (chosen == 0) sync_start(WORK_PULL, "Downloading from the server...");
 		else if (chosen == 1) sync_start(WORK_PUSH, "Uploading to the server...");
 		else if (chosen == 2) sync_start(WORK_NEWEST, "Syncing...");
-		else if (chosen == 3) {
+		else if (chosen == 3) {   /* Auto sync on / off; stays on this screen */
+			autosync_enabled = !autosync_enabled;
+			sync_save_config();
+		} else if (chosen == 4) {
 			sync_free_items();
 			close_panel();
 		}
@@ -4990,8 +5003,8 @@ static void draw_sync_bottom(void)
 		return;
 	}
 	if (sync_step == SYNC_REVIEW) {
-		const char *labels[3];
-		char text[3][48];
+		const char *labels[4];
+		char text[4][48];
 		int count = sync_review_labels(labels, text);
 		draw_touch_list("Sync saves", labels, count, sync_cursor, "Cancel");
 		return;
@@ -4999,6 +5012,231 @@ static void draw_sync_bottom(void)
 	draw_line("Sync saves", 14, 6, 0.55f, theme_accent(), Z_TEXT, 0.0f);
 	draw_wrapped(sync_message, 14, 40, BOTTOM_W - 28, 0.45f, sync_step == SYNC_DONE ? theme_text() : dim, Z_TEXT);
 	if (sync_step == SYNC_DONE) draw_line("Tap or press A to close", 14, 216, 0.42f, dim, Z_TEXT, 0.0f);
+}
+
+/* ---- Auto sync: in the background while playing ----
+   With a server set up and "Auto sync" on (settings/sync.cfg "auto 1"), the game's saves
+   are synced newest-of-each when the game opens and after every save, on a worker thread.
+   The worker does only network work and works out what changes; the main thread then writes
+   the downloaded saves (only into slots not saved over in the meantime) and merges the
+   endings / read lines with what the game holds right now (autosync_poll). */
+typedef struct {
+	char game[128];
+	char address[64], user[48], password[64], folder[64];
+	struct { int slot; long long expected; unsigned char *data; size_t size; } pulls[SAVE_SLOTS];
+	int pull_count, pushed;
+	char *globals;               /* merged endings / unlocks, or NULL */
+	unsigned char *reads;        /* merged read lines, or NULL */
+	size_t reads_size;
+	char error[160];
+} AutoSyncJob;
+
+static AutoSyncJob *autosync_job;
+static Thread autosync_thread;
+static volatile int autosync_running, autosync_finished, autosync_again;
+
+static void autosync_worker(void *arg)
+{
+	AutoSyncJob *job = arg;
+	char host[64];
+	int port = 2121;
+	snprintf(host, sizeof(host), "%s", job->address);
+	char *colon = strchr(host, ':');
+	if (colon != NULL) {
+		*colon = '\0';
+		port = atoi(colon + 1);
+	}
+	FtpConn ftp;
+	if (ftp_net_init() != 0) {
+		snprintf(job->error, sizeof(job->error), "no network");
+		__atomic_store_n(&autosync_finished, 1, __ATOMIC_RELEASE);
+		return;
+	}
+	if (ftp_connect(&ftp, host, port, job->user, job->password) != 0) {
+		snprintf(job->error, sizeof(job->error), "%s", ftp.error);
+		ftp_net_exit();
+		__atomic_store_n(&autosync_finished, 1, __ATOMIC_RELEASE);
+		return;
+	}
+	char path[300];
+	ftp_mkdir(&ftp, job->folder);
+	snprintf(path, sizeof(path), "%s/saves", job->folder);
+	ftp_mkdir(&ftp, path);
+	snprintf(path, sizeof(path), "%s/settings", job->folder);
+	ftp_mkdir(&ftp, path);
+	static char listing[16384];
+	snprintf(path, sizeof(path), "%s/saves", job->folder);
+	if (ftp_list(&ftp, path, listing, sizeof(listing)) < 0) listing[0] = '\0';
+	for (int slot = 0; slot < SAVE_SLOTS; ++slot) {
+		char name[160], local_path[300], wanted[170];
+		snprintf(name, sizeof(name), "%s_%d" SAVE_EXT, job->game, slot + 1);
+		snprintf(local_path, sizeof(local_path), SAVES_DIR "/%s", name);
+		snprintf(wanted, sizeof(wanted), "%s\n", name);
+		size_t local_size = 0, remote_size = 0;
+		unsigned char *local = read_local(local_path, &local_size), *remote = NULL;
+		snprintf(path, sizeof(path), "%s/saves/%s", job->folder, name);
+		if (in_listing(listing, wanted) && ftp_get(&ftp, path, &remote, &remote_size) != 0) remote = NULL;
+		long long here = save_data_time(local, local_size), there = save_data_time(remote, remote_size);
+		if (local != NULL && here > 0 && (remote == NULL || here > there)) {
+			unsigned char *data = portable_save(local, local_size);
+			if (data != NULL && ftp_put(&ftp, path, data, local_size) == 0) job->pushed++;
+			free(data);
+		} else if (remote != NULL && there > 0 && (local == NULL || there > here)) {
+			unsigned char *data = portable_save(remote, remote_size);
+			if (data != NULL) {
+				int n = job->pull_count++;
+				job->pulls[n].slot = slot;
+				job->pulls[n].expected = here;   /* only if the slot is still as it was */
+				job->pulls[n].data = data;
+				job->pulls[n].size = remote_size;
+			}
+		}
+		free(local);
+		free(remote);
+	}
+	/* endings / unlocks and read lines: merged; uploaded here, applied by the main thread */
+	for (int kind = 0; kind < 2; ++kind) {
+		char name[160], local_path[300];
+		snprintf(name, sizeof(name), kind == 0 ? "%s.3vglobal" : "%s.3vread", job->game);
+		snprintf(local_path, sizeof(local_path), kind == 0 ? SAVES_DIR "/%s" : SETTINGS_DIR "/%s", name);
+		snprintf(path, sizeof(path), "%s/%s/%s", job->folder, kind == 0 ? "saves" : "settings", name);
+		size_t local_size = 0, remote_size = 0, merged_size = 0;
+		unsigned char *local = read_local(local_path, &local_size), *remote = NULL;
+		if (ftp_get(&ftp, path, &remote, &remote_size) != 0) remote = NULL;
+		if (local != NULL || remote != NULL) {
+			unsigned char *merged = kind == 0
+				? (unsigned char *)merge_globals_text(local ? (char *)local : "", remote ? (char *)remote : "")
+				: merge_read_marks(local, local_size, remote, remote_size, &merged_size);
+			if (merged != NULL && kind == 0) merged_size = strlen((char *)merged);
+			if (merged != NULL && (remote == NULL || remote_size != merged_size || memcmp(remote, merged, merged_size))) {
+				ftp_put(&ftp, path, merged, merged_size);
+			}
+			if (kind == 0) job->globals = (char *)merged;
+			else {
+				job->reads = merged;
+				job->reads_size = merged_size;
+			}
+		}
+		free(local);
+		free(remote);
+	}
+	ftp_close(&ftp);
+	ftp_net_exit();
+	__atomic_store_n(&autosync_finished, 1, __ATOMIC_RELEASE);
+}
+
+/* Starts a background sync of the current game (or queues one if one is running). */
+static void autosync_request(void)
+{
+	if (game_name[0] == '\0' || panel == PANEL_SYNC) return;
+	sync_load_config();
+	if (!autosync_enabled || sync_address[0] == '\0') return;
+	if (autosync_running) {
+		autosync_again = 1;
+		return;
+	}
+	AutoSyncJob *job = calloc(1, sizeof(*job));
+	if (job == NULL) return;
+	snprintf(job->game, sizeof(job->game), "%s", game_name);
+	snprintf(job->address, sizeof(job->address), "%s", sync_address);
+	snprintf(job->user, sizeof(job->user), "%s", sync_user);
+	snprintf(job->password, sizeof(job->password), "%s", sync_password);
+	snprintf(job->folder, sizeof(job->folder), "%s", sync_folder);
+	read_save();   /* the worker reads the files: put the latest read lines there */
+	autosync_job = job;
+	autosync_finished = 0;
+	autosync_running = 1;
+	autosync_again = 0;
+#ifdef __3DS__
+	autosync_thread = threadCreate(autosync_worker, job, 64 * 1024, 0x31, -2, false);
+#else
+	autosync_thread = threadCreate(autosync_worker, job, 64 * 1024, 0, 0, false);
+#endif
+	if (autosync_thread == NULL) {
+		autosync_running = 0;
+		autosync_job = NULL;
+		free(job);
+	}
+}
+
+static void autosync_free(AutoSyncJob *job)
+{
+	for (int i = 0; i < job->pull_count; ++i) free(job->pulls[i].data);
+	free(job->globals);
+	free(job->reads);
+	free(job);
+}
+
+/* Each frame: when the worker is done, apply what it brought back. */
+static void autosync_poll(void)
+{
+	if (!autosync_running || !__atomic_load_n(&autosync_finished, __ATOMIC_ACQUIRE)) return;
+	threadJoin(autosync_thread, UINT64_MAX);
+	threadFree(autosync_thread);
+	autosync_thread = NULL;
+	autosync_running = 0;
+	AutoSyncJob *job = autosync_job;
+	autosync_job = NULL;
+	int pulled = 0;
+	if (job->error[0] == '\0' && strcmp(job->game, game_name) == 0) {
+		for (int i = 0; i < job->pull_count; ++i) {
+			char path[200];
+			save_path(job->pulls[i].slot, path, sizeof(path));
+			size_t size = 0;
+			unsigned char *now = read_local(path, &size);
+			long long current = save_data_time(now, size);
+			free(now);
+			if (current == job->pulls[i].expected && write_local(path, job->pulls[i].data, job->pulls[i].size) == 0) {
+				++pulled;
+			}
+		}
+		if (job->globals != NULL) {
+			char path[220];
+			globals_path(path, sizeof(path));
+			size_t size = 0;
+			unsigned char *now = read_local(path, &size);
+			char *merged = merge_globals_text(now ? (char *)now : "", job->globals);
+			if (merged != NULL && (now == NULL || strcmp((char *)now, merged) != 0)) {
+				write_local(path, (unsigned char *)merged, strlen(merged));
+				globals_load();
+				if (program != NULL) globals_apply();
+			}
+			free(now);
+			free(merged);
+		}
+		if (job->reads != NULL) {
+			char path[220];
+			read_save();
+			read_path(path, sizeof(path));
+			size_t size = 0, merged_size = 0;
+			unsigned char *now = read_local(path, &size);
+			unsigned char *merged = merge_read_marks(now, size, job->reads, job->reads_size, &merged_size);
+			if (merged != NULL && (now == NULL || size != merged_size || memcmp(now, merged, merged_size))) {
+				write_local(path, merged, merged_size);
+				read_load();
+			}
+			free(now);
+			free(merged);
+		}
+		refresh_slots();
+		if (pulled + job->pushed > 0) {
+			snprintf(notice, sizeof(notice), "Auto sync: %d save(s) downloaded, %d uploaded", pulled, job->pushed);
+		}
+	} else if (job->error[0] != '\0') {
+		snprintf(notice, sizeof(notice), "Auto sync: %.80s", job->error);
+	}
+	autosync_free(job);
+	if (autosync_again) autosync_request();
+}
+
+/* Leaving a game or the app: wait for a running sync to finish (it has timeouts). */
+static void autosync_finish(void)
+{
+	if (!autosync_running) return;
+	threadJoin(autosync_thread, UINT64_MAX);
+	__atomic_store_n(&autosync_finished, 1, __ATOMIC_RELEASE);
+	autosync_again = 0;
+	autosync_poll();
 }
 
 static void draw_bottom(C3D_RenderTarget *target)
@@ -5182,8 +5420,11 @@ static void draw_bottom(C3D_RenderTarget *target)
 
 /* ---------- input ---------- */
 
+static void autosync_poll(void);
+
 static void leave_game(void)
 {
+	autosync_finish();
 	read_save();
 	playtime_save();
 	extras_mode = 0;
@@ -5849,6 +6090,7 @@ int main(void)
 #endif
 
 		if (quit_app) break;
+		autosync_poll();
 		audio_update(dt);
 		if (down || hidKeysHeld()) last_activity = now;
 		if (mode == MODE_PLAY && panel == PANEL_NONE && !extras_mode && now - last_activity < IDLE_LIMIT_MS
@@ -5992,6 +6234,7 @@ int main(void)
 	}
 
 	stop_video();
+	autosync_finish();
 	playtime_save();   /* the app is closing (START / exit menu): keep the last minutes */
 	read_save();
 	gs_free(program);

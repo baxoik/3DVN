@@ -1397,3 +1397,48 @@ bool ndspChnIsPlaying(int channel)
 {
 	return channel >= 0 && channel < CHANNELS && channels[channel].head != NULL;
 }
+
+/* ---------------------------------------------------------------- threads */
+
+struct VnThread {
+	SDL_Thread *thread;
+	ThreadFunc entry;
+	void *arg;
+};
+
+static int thread_main(void *data)
+{
+	struct VnThread *t = data;
+	t->entry(t->arg);
+	return 0;
+}
+
+Thread threadCreate(ThreadFunc entry, void *arg, size_t stack_size, int prio, int core_id, bool detached)
+{
+	(void)stack_size; (void)prio; (void)core_id; (void)detached;
+	struct VnThread *t = calloc(1, sizeof(*t));
+	if (t == NULL) return NULL;
+	t->entry = entry;
+	t->arg = arg;
+	t->thread = SDL_CreateThread(thread_main, "3dvn-worker", t);
+	if (t->thread == NULL) {
+		free(t);
+		return NULL;
+	}
+	return t;
+}
+
+Result threadJoin(Thread thread, u64 timeout_ns)
+{
+	(void)timeout_ns;
+	if (thread != NULL && thread->thread != NULL) {
+		SDL_WaitThread(thread->thread, NULL);
+		thread->thread = NULL;
+	}
+	return 0;
+}
+
+void threadFree(Thread thread)
+{
+	free(thread);
+}

@@ -23,6 +23,13 @@ typedef uint64_t u64;
 typedef int16_t s16;
 typedef int32_t s32;
 typedef int32_t Result;
+
+/* libctru threads (used for background save sync), on SDL threads */
+typedef struct VnThread *Thread;
+typedef void (*ThreadFunc)(void *);
+Thread threadCreate(ThreadFunc entry, void *arg, size_t stack_size, int prio, int core_id, bool detached);
+Result threadJoin(Thread thread, u64 timeout_ns);
+void threadFree(Thread thread);
 #define R_SUCCEEDED(res) ((res) >= 0)
 #define R_FAILED(res) ((res) < 0)
 
