@@ -91,10 +91,11 @@ static int open_socket(FtpConn *ftp, unsigned host, int port)
 			close(sock);
 			return fail(ftp, "no answer from the server (port %d)", port);
 		}
-		int error = 0;
-		socklen_t length = sizeof(error);
-		getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &length);
-		if (error != 0) {
+		/* Connected? Asking for the peer works the same on every system (the 3DS does not
+		   report SO_ERROR the usual way, which looked like "refused"). */
+		struct sockaddr_in peer;
+		socklen_t length = sizeof(peer);
+		if (getpeername(sock, (struct sockaddr *)&peer, &length) != 0) {
 			close(sock);
 			return fail(ftp, "connection refused (port %d)", port);
 		}
