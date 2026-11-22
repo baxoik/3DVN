@@ -72,6 +72,23 @@ Linux set Options → General → Audio API to **Cubeb**; with the Windows-only 
 Cemu hangs every homebrew title before its first frame. Screenshots from the test hook
 (`shot`) come out garbled on Wii U (pixel readback format); they are fine on PC.
 
+## Sharing saves between 3DS and Wii U
+
+Save files are the same on both: every 3DVN build from 2026-11-22 on writes them in one
+byte order (the 3DS's) and reads both orders, so older Wii U saves still load. To sync,
+run FTP servers on both consoles (ftpd on the 3DS, FTPiiU on the Wii U) and, on a PC:
+
+```sh
+python3 tools/sync_saves.py 3ds:<3DS-IP> wiiu:<Wii-U-IP>
+```
+
+Each save slot goes both ways (the newer one wins); endings and unlocks
+(`saves/<game>.3vglobal`) and read lines (`settings/<game>.3vread`) are merged. Nothing is
+deleted, and every replaced file is backed up on the PC first. `--dry-run` shows what
+would change; a mounted SD card folder works in place of either console. The game must
+have the same name on both (`games/<name>.3vp`). PC saves use a different layout and are
+not shared.
+
 ## Unattended tests (PC and Wii U)
 
 If `VN_SCRIPT=<file>` is set (or `<root>/autotest.txt` exists), the platform layer

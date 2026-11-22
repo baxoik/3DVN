@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -1628,6 +1629,137 @@ static void make_preview(char *out, size_t size)
 	out[length] = '\0';
 }
 
+/* ---- Save files in one byte order on every console ----
+   A save is the SaveData struct as it is in memory. The 3DS (ARM) and the Wii U
+   (PowerPC) lay it out the same way (checked below), but the Wii U is big-endian. Saves
+   are written little-endian (the 3DS's order) everywhere, and a save in the other order
+   (e.g. from an older Wii U build) is converted when read, so a save copied between a
+   3DS and a Wii U loads on either. The event type is one byte on the 3DS (a short enum,
+   then padding) and four on the Wii U: in the file it is the first byte. */
+#if defined(__3DS__) || defined(__WIIU__)
+_Static_assert(sizeof(SaveData) == 66544, "save layout changed: 3DS and Wii U saves must match");
+#endif
+
+static int host_big_endian(void)
+{
+	const unsigned one = 1;
+	return *(const unsigned char *)&one == 0;
+}
+
+static void swap_bytes(void *field, size_t size)
+{
+	unsigned char *b = field;
+	for (size_t i = 0; i < size / 2; ++i) {
+		unsigned char t = b[i];
+		b[i] = b[size - 1 - i];
+		b[size - 1 - i] = t;
+	}
+}
+#define SWAP(field) swap_bytes(&(field), sizeof(field))
+
+static void swap_header(SaveHeader *h)
+{
+	SWAP(h->magic);
+	SWAP(h->script_hash);
+	SWAP(h->saved_at);
+}
+
+/* Reverses the byte order of every number in a save (all of them, used or not). */
+static void swap_save(SaveData *d)
+{
+	swap_header(&d->header);
+	GsState *st = &d->state;
+	SWAP(st->pc);
+	SWAP(st->var_count);
+	for (int i = 0; i < GS_MAX_VARS; ++i) {
+		SWAP(st->vars[i].value.is_str);
+		SWAP(st->vars[i].value.num);
+	}
+	SWAP(st->call_depth);
+	for (int i = 0; i < GS_MAX_CALLS; ++i) SWAP(st->call_stack[i]);
+	SWAP(st->pending_menu);
+	for (int i = 0; i < GS_MAX_CHOICES; ++i) SWAP(st->pending_map[i]);
+	SWAP(st->pending_count);
+	Scene *sc = &d->scene;
+	SWAP(sc->bg_elapsed);
+	SWAP(sc->bg_duration);
+	for (int i = 0; i < MAX_SPRITES; ++i) {
+		Sprite *sp = &sc->sprites[i];
+		SWAP(sp->active);
+		SWAP(sp->alpha);
+		SWAP(sp->from);
+		SWAP(sp->to);
+		SWAP(sp->duration);
+		SWAP(sp->elapsed);
+	}
+	GsEvent *ev = &d->event;
+	SWAP(ev->color);
+	SWAP(ev->seconds);
+	SWAP(ev->choice_count);
+	SWAP(ev->line);
+	Backlog *log = &d->backlog;
+	SWAP(log->count);
+	SWAP(log->start);
+	for (int i = 0; i < BACKLOG_MAX; ++i) SWAP(log->entries[i].color);
+}
+
+/* The start of GsEvent differs: the 3DS has a 1-byte type followed by the speaker name
+   (offset 1), the Wii U a 4-byte type and the speaker at offset 4; both end before
+   `color` at offset 36. In the file this region is the 3DS's: type in byte 0, speaker
+   from byte 1. Older big-endian Wii U saves have type in byte 3, speaker from byte 4. */
+#define EVENT_HEAD ((size_t)offsetof(GsEvent, color))
+
+static void event_head_to_file(SaveData *d)
+{
+	unsigned char head[EVENT_HEAD];
+	memset(head, 0, sizeof(head));
+	head[0] = (unsigned char)d->event.type;
+	memcpy(head + 1, d->event.speaker, sizeof(d->event.speaker) - 1);
+	memcpy(&d->event, head, sizeof(head));
+}
+
+static void event_head_from_file(SaveData *d, int old_wiiu)
+{
+	unsigned char head[EVENT_HEAD];
+	memcpy(head, &d->event, sizeof(head));
+	const unsigned char *speaker = head + (old_wiiu ? 4 : 1);
+	size_t room = sizeof(head) - (size_t)(speaker - head);
+	if (room > sizeof(d->event.speaker) - 1) room = sizeof(d->event.speaker) - 1;
+	GsEventType type = (GsEventType)head[old_wiiu ? 3 : 0];
+	char name[sizeof(d->event.speaker)];
+	memset(name, 0, sizeof(name));
+	memcpy(name, speaker, room);
+	d->event.type = type;
+	memcpy(d->event.speaker, name, sizeof(name));
+}
+
+/* After reading a header: 1 if it is a save (converted to this console's order). */
+static int header_from_file(SaveHeader *h)
+{
+	if (h->magic == SAVE_MAGIC) return 1;
+	SaveHeader swapped = *h;
+	swap_header(&swapped);
+	if (swapped.magic != SAVE_MAGIC) return 0;
+	*h = swapped;
+	return 1;
+}
+
+/* After reading a whole save: converts it to this console's order and layout; 0 if it
+   is not a save. */
+static int save_from_file(SaveData *d)
+{
+	int native = d->header.magic == SAVE_MAGIC;
+	if (!native) {
+		SaveHeader swapped = d->header;
+		swap_header(&swapped);
+		if (swapped.magic != SAVE_MAGIC) return 0;
+	}
+	int little_endian_file = native != host_big_endian();
+	if (!native) swap_save(d);
+	event_head_from_file(d, !little_endian_file);
+	return 1;
+}
+
 static void refresh_slots(void)
 {
 	for (int slot = 0; slot < SAVE_SLOTS; ++slot) {
@@ -1637,7 +1769,7 @@ static void refresh_slots(void)
 		memset(&slots[slot], 0, sizeof(slots[slot]));
 		FILE *file = fopen(path, "rb");
 		if (file != NULL) {
-			if (fread(&header, sizeof(header), 1, file) == 1 && header.magic == SAVE_MAGIC) {
+			if (fread(&header, sizeof(header), 1, file) == 1 && header_from_file(&header)) {
 				slots[slot].used = 1;
 				slots[slot].saved_at = header.saved_at;
 				header.preview[sizeof(header.preview) - 1] = '\0';
@@ -1672,6 +1804,9 @@ static int save_slot(int slot)
 	data->event = event;
 	data->backlog = backlog;
 
+	/* little-endian on every console (see swap_save) */
+	event_head_to_file(data);
+	if (host_big_endian()) swap_save(data);
 	unsigned char loop_data[GS_BGLOOP_SAVE_SIZE];
 	int ok = gs_bgloop_encode(&bgloop, loop_data)
 		&& fwrite(data, sizeof(*data), 1, file) == 1
@@ -1827,7 +1962,7 @@ static int load_slot(int slot)
 	save_path(slot, path, sizeof(path));
 	SaveData *data = malloc(sizeof(*data));
 	FILE *file = data != NULL ? fopen(path, "rb") : NULL;
-	int read_ok = file != NULL && fread(data, sizeof(*data), 1, file) == 1;
+	int read_ok = file != NULL && fread(data, sizeof(*data), 1, file) == 1 && save_from_file(data);
 	GsBgLoop loaded_loop = {0};
 	NvlPage loaded_page;
 	nvl_page_clear(&loaded_page);
