@@ -1,27 +1,21 @@
 # 3DVN
 
-> **About this fork.** This is a personal fork of [baxoik/3DVN](https://github.com/baxoik/3DVN), made to play a fully voiced G-Senjou no Maou on a 3DS, and since then Ever17 on 3DS and Wii U. It adds the following on top of upstream:
+> **3DVN-wiiu.** This fork of [baxoik/3DVN](https://github.com/baxoik/3DVN) brings the engine to the **Wii U** (and PC), alongside the 3DS, and adds what's needed to play long voiced novels such as G-Senjou no Maou and Ever17 comfortably. See [platform/README.md](platform/README.md) for building and installing on Wii U and PC.
 >
-> **Engine**
-> - **Auto mode:** Y or the "Auto (Y)" touch button. Voiced lines move on 0.5 s after the voice ends; unvoiced lines wait 1 s plus 0.04 s per character (max 6 s). It stops at choices.
-> - **Long lines fit the text box:** a line that would wrap past the bottom of the box is drawn smaller (down to 60%) instead of running off the screen. Also sent upstream as [#1](https://github.com/baxoik/3DVN/pull/1).
-> - **Close-up sprites in front:** sprites named `*_b` are drawn after the others, as in the original game.
-> - **No "THE END" over a game's own end card:** it's only drawn over an empty or black screen.
-> - **Text on the bottom screen:** Options → "Text screen: Bottom" puts the dialogue, speaker name and face on the bottom screen, so the top screen shows only the scene. Choices appear on the bottom screen as buttons you can tap (D-pad + A still work). A third setting, "Top, choices below", keeps the text box on the top screen and uses the bottom screen only for controls and tappable choices, the layout planned for a Wii U TV + GamePad. The other buttons move to a slim strip along the bottom edge. It's saved per game, and the default stays "Top".
-> - **More Options:** text speed (Slow / Normal / Fast / Instant), auto-mode speed (Short / Normal / Long), and "Fast-forward: Read only", which skips only lines you've already read. Read lines are remembered per game on the SD card. In the bottom-text layout, tapping the dialogue also advances like A.
-> - **PC and Wii U builds** (see [platform/README.md](platform/README.md)): an SDL2 platform layer lets the unchanged engine build for PC (both screens in one window, sharp text at 2x) and Wii U (top screen on the TV, bottom screen on the GamePad with touch). Both are tested, the Wii U build on a real console. The title menu and the in-game menu are also shown as touch buttons on the bottom screen / GamePad.
-> - **Game archives and Ogg audio:** a game can be a single `games/<name>.3vp` file (an uncompressed ZIP made with `tools/make_pack.py`), with an optional `games/<name>/` folder of override files. Music and voices can be Ogg Vorbis, streamed with stb_vorbis. The voiced G-Senjou build shrinks from 2.2 GB in 16,000 files to one 352 MB file. Works on 3DS, Wii U and PC.
-> - **HD images on PC and Wii U:** `hd/<folder>/<file>` (PNG or JPEG, either for either) is drawn in place of the normal image at the same size, so layouts stay the same and only detail improves. The 3DS ignores `hd/`; pack it out with `make_pack.py --exclude hd`.
-> - **Global variables:** number variables named `g_*` keep their value across new games and saves (endings seen, routes unlocked), stored in `saves/<game>.3vglobal`.
-> - **MS-ADPCM audio:** WAV files with MS-ADPCM, as many older games ship, play directly (bit-identical to ffmpeg's decoder). Plain PCM WAV also plays correctly on the big-endian Wii U now.
-> - **Volume:** Master, Music and Voice volume (0-10) in each game's Options; Voice applies to sounds under `audio/v/`.
-> - **Emulator test build:** `make EXTRA_CFLAGS=-DAUTOTEST` logs notices, errors, chapter loads and shrunk or overflowing lines to `sdmc:/3dvn-test.log`.
+> **Wii U**
+> - TV + GamePad: the scene on the TV at 1080p (or 720p), controls, menus, save slots, backlog and choices as touch buttons on the GamePad at its full resolution. Optional wide TV layout (text box and menus use the full 16:9 width; pictures keep their shape).
+> - Off-TV play: Minus puts everything on the GamePad.
+> - Leave to the Homebrew Launcher or the Wii U Menu (START, or the in-game Quit).
+> - Guide reader (`games/<name>.txt`, read on the GamePad, swipe to scroll, remembers your place), endings checklist, playtime and clock, GamePad backlog with voice replay.
 >
-> **[gsenjou-tools/](gsenjou-tools/README.md)** (for G-Senjou no Maou)
-> - **Voices:** adds the voice clips to a voiceless import. All 13,425 voiced lines are matched, even where your build's translation words a line differently. Voices go in small folders so FAT32 SD cards don't stall before each line.
-> - **Scene fixes:** face portraits show only on the speaker's own lines, and sprites no longer stay on screen across chapters (the importer part of this is also upstream as [#2](https://github.com/baxoik/3DVN/pull/2)).
-> - **Chapter select:** jump to any chapter or route part; earned story flags are set, so you don't land in a flag-gated bad ending.
-> - **3DS upload over FTP**, and **emulator testing:** a headless driver for the Azahar libretro core that plays each chapter with fast-forward and collects the test log and screenshots.
+> **Engine (all platforms)**
+> - SDL2 platform layer: the unchanged engine builds for PC and Wii U.
+> - Game archives (`.3vp`, one file per game), Ogg Vorbis and MS-ADPCM audio, HD images for PC / Wii U (`hd/`), looping sound effects with loop points.
+> - Auto mode, read-only fast-forward, text speed, volume sliders (master, music, voice), text on the top or bottom screen, smooth text reveal, italics (PC / Wii U), long lines shrunk to fit the text box, global variables (endings seen, unlocks), saves that keep working when a game's scripts are updated.
+>
+> **Converters**
+> - [gsenjou-tools/](gsenjou-tools/README.md): build G-Senjou no Maou from your own Steam copy in one command (voices, HD art, the unrated patch if installed, chapter select).
+> - Ever17 is converted by a separate tool (not in this repository).
 >
 > No game content is included; the tools work on files from your own copy. Upstream has no license, so this fork is offered as-is. These changes were written with AI assistance (Claude Code).
 

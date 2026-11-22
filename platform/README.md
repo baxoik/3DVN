@@ -41,19 +41,36 @@ the `devkitpro/devkitppc` container image).
 cmake --build build-wiiu                  # -> build-wiiu/3dvn.wuhb (and 3dvn.rpx)
 ```
 
-Copy `3dvn.wuhb` to `sd:/wiiu/apps/` (or `3dvn.rpx` plus `platform/wiiu/hbl-icon.png`
-renamed to `icon.png` into `sd:/wiiu/apps/3dvn/` for the Homebrew Launcher) and games to
-`sd:/wiiu/3dvn/games/<name>/`
-(Aroma environment). The console's own font is used; if it can't be read, put a
-`font.ttf` in `sd:/wiiu/3dvn/`. Buttons follow the GamePad labels (A, B, X, Y, L,
-R/ZR, + = START, − = SELECT); the GamePad touchscreen works for touch.
+**Install:** Aroma: copy `3dvn.wuhb` to `sd:/wiiu/apps/`. Homebrew Launcher (Tiramisu,
+Haxchi, CBHC): copy `3dvn.rpx`, `meta.xml` and `platform/wiiu/hbl-icon.png` renamed to
+`icon.png` into `sd:/wiiu/apps/3dvn/`. Games go in `sd:/wiiu/3dvn/games/` (a folder per
+game or one `<name>.3vp` archive). Large archives copy much faster with a card reader
+than over FTP.
 
-**Status:** runs in Cemu 2.6 (game list, title, chapters on TV + GamePad, no
-flicker). Cemu note: on Linux set Options → General → Audio API to **Cubeb**; with
-the Windows-only default, Cemu hangs every homebrew title before its first frame.
-Not yet checked on a real console. `sd:/wiiu/3dvn/boot.log` (also sent to
-`OSReport`) traces start-up. Screenshots from the test hook (`shot`) come out
-garbled on Wii U (pixel readback format); they are fine on PC.
+**Screens:** the TV shows the scene at the console's resolution (1080p or 720p); the
+GamePad (854x480, its full resolution) shows the controls, menus, save slots, backlog
+and choices as touch buttons. Options → "TV screen: Wide" uses the TV's whole 16:9
+width for text box and menus (pictures keep their shape). **Minus** switches to
+off-TV play: everything on the GamePad, taps advance the text; Minus again returns to
+the TV.
+
+**Buttons** follow the GamePad labels (A, B, X, Y, L, R/ZR, + = START). START opens a
+menu to leave to the Homebrew Launcher or the Wii U Menu; the in-game Quit offers the
+same plus the game list.
+
+**Per game:** a text file `games/<name>.txt` adds a Guide button (read on the GamePad,
+swipe to scroll, reopens where you left off); `games/<name>.endings.txt` or the game's
+own `endings.txt` adds an endings checklist. Playtime and the time of day show on the
+GamePad.
+
+The console's own font is used; if it can't be read, put a `font.ttf` in
+`sd:/wiiu/3dvn/`. `sd:/wiiu/3dvn/boot.log` (also sent to `OSReport`) traces start-up
+and slow frames.
+
+**Status:** tested on a real Wii U (Homebrew Launcher) and in Cemu 2.6. Cemu note: on
+Linux set Options → General → Audio API to **Cubeb**; with the Windows-only default,
+Cemu hangs every homebrew title before its first frame. Screenshots from the test hook
+(`shot`) come out garbled on Wii U (pixel readback format); they are fine on PC.
 
 ## Unattended tests (PC and Wii U)
 

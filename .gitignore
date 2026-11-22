@@ -31,3 +31,12 @@
 *.map
 /build-wiiu/
 /3dvn-pc
+# build output and caches
+/3dvn.3dsx
+/3dvn.elf
+/3dvn.smdh
+*.rpx
+*.wuhb
+__pycache__/
+*.pyc
+/release/

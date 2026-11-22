@@ -89,26 +89,15 @@ empty to skip packing).
      `audio/<name>.loop` (rain, phone and other ambience).
 4. `tools/make_pack.py` packs the two archives.
 
-### Older builds from the 800x600 release
-
-Before the Steam tools, the game was built from a separate copy of the older 800x600 release (same English translation, slightly different edit, with the adult scenes)
-(`import_gsenjou.py --src`), with voices lined up from the Steam scripts
-(`build_voiced.sh`, `add_voices.py`) and HD pictures matched in (`make_hd.py`,
-`make_archives.sh`). Those tools still work for such a dump but aren't needed with a
-Steam copy.
-
 ## Get it onto the 3DS
 
-Copy `3dvn.3dsx` to `sd:/3ds/` and the game folder to
-`sd:/3ds/3dvn/games/g-senjou-no-maou/`. A card reader is much faster than FTP
-for the roughly 16,000 files. If you use FTP (e.g. ftpd on the 3DS, port 5000):
+Copy `3dvn.3dsx` to `sd:/3ds/` and `packs/g-senjou-no-maou-3ds.3vp` to
+`sd:/3ds/3dvn/games/g-senjou-no-maou.3vp`. A card reader is much faster than FTP for a
+file this size. If you use FTP (e.g. ftpd on the 3DS, port 5000):
 
 ```sh
-python3 gsenjou-tools/ftp_upload.py <3DS-IP> 5000 voiced/g-senjou-no-maou /3ds/3dvn/games
+python3 gsenjou-tools/ftp_upload.py <3DS-IP> 5000 packs/g-senjou-no-maou-3ds.3vp /3ds/3dvn/games
 ```
-
-`ftp_restructure.py` moves voices that are already on the card from `audio/`
-into the `audio/v/<group>/` layout with FTP renames, then uploads the scripts.
 
 ## Test in an emulator
 

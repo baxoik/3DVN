@@ -14,7 +14,7 @@ only), and every page end hides it; @clear_mface forgets all. The converter
 instead showed the face at @mface and kept it up for everyone. The converter is
 re-run on the original scripts with stand-in assets and markers for
 @clear_mface / @avg / @novel to work out which face each line should show; lines
-are matched to the game's lines like add_voices.py does (the same when it was built from the same scripts).
+are matched to the game's lines (identical when the game was built from the same scripts).
 HEADS_TXT is the case list of getStNameHead() from the game's macro.ks, copied from
 your own copy (lines of the form "<name>":tempName = "<head>"); see README.md.
 """

@@ -1,18 +1,22 @@
 # G-Senjou no Maou to 3DVN converter
 
-`tools/import_gsenjou.py` builds a playable 3DVN game folder from the local
-translated KiriKiri dump (`g-senjou no maou/`).
+`tools/import_gsenjou.py` builds a playable 3DVN game folder from G-Senjou no Maou's
+KiriKiri scripts and assets. It reads either:
 
-It is tuned for this specific script/asset layout (UTF-16 `.ks` files plus
-`Img-Sound Files/background.zip`, `foreground.zip`, `sound.zip`), not a
-generic KiriKiri converter.
+- **a Steam copy** (recommended), unpacked by `gsenjou-tools/extract_steam.py`: the
+  1280x720 release, with voices when the copy has them and the adult scenes when the
+  unrated patch is installed. `gsenjou-tools/build_from_steam.sh` runs the whole build;
+  see `gsenjou-tools/README.md`.
+- **the older 800x600 release's scripts and assets** laid out as `1-raw-scripts/` (UTF-16
+  `.ks` files) plus `Img-Sound Files/background.zip`, `foreground.zip`, `sound.zip`.
+
+It is tuned for this game, not a generic KiriKiri converter.
 
 ## Usage
 
 ```sh
-python3 tools/import_gsenjou.py \
-  --src "g-senjou no maou" \
-  --out games/g-senjou-no-maou
+python3 tools/import_gsenjou.py --steam steam-work --out games/g-senjou-no-maou --only g01
+python3 tools/import_gsenjou.py --src "g-senjou no maou" --out games/g-senjou-no-maou
 ```
 
 Useful options:
@@ -33,6 +37,12 @@ Useful options:
 - Backgrounds/CGs from 800x600 down to 320x240, centered on 400x240.
 - Character sprites cropped to alpha bounds and scaled to fit 3DS.
 - BGM/SE (and optionally voice) OGG into mono PCM WAV via `ffmpeg`.
+- Looping sound effects (`@se loop=true`) into `sfx NAME loop`, stopped by `@sse`,
+  `@fose` or a new sound on the same buffer.
+- Indented commands and comments (inside `@if` blocks) are read as commands, not text.
+- With `--steam`: pictures scaled by 1/3 for the 3DS plus the originals in `hd/`, sprites
+  placed from the game's `character_pos.tjs`, voices from each line's `[nm ... s=...]`.
+- "Include adult scenes?" is only asked when the scripts have adult scenes.
 - A G-Senjou-themed ADV/NVL textbox in `ui/`.
 
 The output includes:
