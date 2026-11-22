@@ -11,6 +11,7 @@ STEAM_DIR is the game's install folder (the one holding data.xp3 and arc/). Writ
                           image, others, bgm, sound and, if your copy has it, voice
                           (a numbered extra archive such as evimage2.xp3 is merged into
                           its base folder, after it)
+  OUT_DIR/patch/          images from the patches (they take the place of the originals)
   OUT_DIR/png/<archive>/  the .tlg images decoded to PNG; sprite and face expressions
                           pasted onto their base image (tools/decode_tlg.py --compose)
 
@@ -119,7 +120,11 @@ def fefe_text(data):
         return data.decode("cp932", "replace")
 
 
-def unpack(archive, out_dir):
+IMAGE_EXTS = (".tlg", ".png", ".jpg", ".jpeg", ".bmp")
+
+
+def unpack(archive, out_dir, place=None):
+    """Writes the archive's files under out_dir, or where place(name) says."""
     count = 0
     with open(archive, "rb") as handle:
         for entry in entries(read_index(handle)):
@@ -127,7 +132,7 @@ def unpack(archive, out_dir):
             if not name or name.endswith("/") or name.startswith("$$$") or len(name) > 200:
                 continue   # directories, and the "This is a protected archive" notice entry
             data = file_data(handle, entry)
-            target = os.path.join(out_dir, name)
+            target = place(name) if place else os.path.join(out_dir, name)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             if name.lower().endswith(TEXT_EXTS):
                 with open(target, "w", encoding="utf-8", newline="") as text:
@@ -151,11 +156,7 @@ def main():
 
     if not os.path.exists(os.path.join(args.steam, "data.xp3")):
         sys.exit(f"{args.steam}: no data.xp3 here; give the game's install folder")
-    # data.xp3, then the patches in order (each replaces files of the ones before)
-    patches = sorted((name for name in os.listdir(args.steam) if re.fullmatch(r"patch\d*\.xp3", name, re.I)),
-                     key=number)
-    for name in ["data.xp3"] + patches:
-        print(f"{name}: {unpack(os.path.join(args.steam, name), os.path.join(args.out, 'data'))} files")
+    print(f"data.xp3: {unpack(os.path.join(args.steam, 'data.xp3'), os.path.join(args.out, 'data'))} files")
     # arc/: one job per folder; within a folder base archive first, then evimage2.xp3 ...
     groups = {}
     arc = os.path.join(args.steam, "arc")
@@ -173,6 +174,34 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, args.jobs)) as pool:
         for counts in pool.map(unpack_group, sorted(groups)):
             print("\n".join(counts))
+
+    # Patches last, in order (patch.xp3, patch2.xp3, ...; an unrated patch is one of them).
+    # KiriKiri finds files by name in whichever archive has them, the latest patch first,
+    # and patches store them without folders. So a patch file replaces the file of the same
+    # name wherever it was unpacked; scripts go to data/scenario; images go to patch/,
+    # which the converter prefers over the other folders (a patch's .jpg replaces a .tlg).
+    existing = {}
+    for folder, _dirs, files in os.walk(args.out):
+        if os.path.relpath(folder, args.out).split(os.sep)[0] in ("png", "patch"):
+            continue
+        for name in files:
+            existing.setdefault(name.lower(), os.path.join(folder, name))
+
+    def patch_place(name):
+        if "/" in name:
+            return os.path.join(args.out, "data", name)
+        if name.lower().endswith(IMAGE_EXTS):
+            return os.path.join(args.out, "patch", name)
+        if name.lower() in existing:
+            return existing[name.lower()]
+        if name.lower().endswith(".ks"):
+            return os.path.join(args.out, "data", "scenario", name)
+        return os.path.join(args.out, "data", name)
+
+    patches = sorted((name for name in os.listdir(args.steam) if re.fullmatch(r"patch\d*\.xp3", name, re.I)),
+                     key=number)
+    for name in patches:
+        print(f"{name}: {unpack(os.path.join(args.steam, name), None, patch_place)} files")
     if not os.path.isdir(os.path.join(args.out, "voice")):
         print("no voice.xp3: the game will be built without voices")
     decoder = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "decode_tlg.py")

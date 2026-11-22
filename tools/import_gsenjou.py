@@ -462,8 +462,10 @@ class SteamAssets(Assets):
         png = os.path.join(src, "png")
         image_folders = ["bgimage", "evimage", "fgimage", "face", "image", "others"]
         image_folders += sorted(f for f in (os.listdir(png) if os.path.isdir(png) else [])
-                                if f not in image_folders)   # e.g. a patch's own images
-        for folder in image_folders:
+                                if f not in image_folders and f != "patch")
+        # patch/ (images from patch.xp3, patch2.xp3 ... e.g. the unrated patch) comes first,
+        # so its pictures replace the originals of the same name
+        for folder in ["patch"] + image_folders:
             base = os.path.join(src, "png", folder)
             if os.path.isdir(base):
                 for name in os.listdir(base):
@@ -540,7 +542,7 @@ class SteamAssets(Assets):
 
     def gallery_assets(self):
         stems = sorted(stem for (kind, stem), (folder, _) in self.files.items()
-                       if kind == "image" and folder == "evimage" and stem.startswith("ev_"))
+                       if kind == "image" and folder in ("evimage", "patch") and stem.startswith("ev_"))
         if not self.enabled:
             return len(stems)
         from PIL import Image
@@ -1140,6 +1142,17 @@ class Converter:
 
 
 def write_game(out, chapters, converter):
+    # The adult scenes are only in some releases. The older 800x600 release's scripts skip
+    # them when global.nonero is set; the Steam unrated patch keeps them in their own files
+    # (ghh1.ks, gkh1.ks, ... gkhb.ks), called from the story: those calls get the same check.
+    for stem, body in chapters.items():
+        wrapped = []
+        for line in body:
+            if re.fullmatch(r"call sub_g[a-z]h[0-9b]+", line):
+                wrapped += ["if nonero == 0", line, "end"]
+            else:
+                wrapped.append(line)
+        chapters[stem] = wrapped
     os.makedirs(os.path.join(out, "ch"), exist_ok=True)
     write_ui_theme(out)
     with open(os.path.join(out, "characters.3vs"), "w", encoding="utf-8") as handle:
@@ -1150,8 +1163,6 @@ def write_game(out, chapters, converter):
         with open(os.path.join(out, "ch", stem + ".3vs"), "w", encoding="utf-8") as handle:
             handle.write("include characters.3vs\n")
             handle.write("\n".join(body) + "\n")
-    # The adult scenes are only in some releases (the older 800x600 release; the Steam release with the
-    # unrated patch). Their scripts skip them when global.nonero is set: ask only then.
     adult = any(re.search(r"\bnonero\b", line) for body in chapters.values() for line in body)
     main = ["# G-Senjou no Maou, converted for 3DVN.", "bg black"]
     if adult:
