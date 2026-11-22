@@ -63,8 +63,12 @@ class Ftp:
     def __init__(self, host, port, root, label):
         self.label, self.root = label, root.rstrip("/")
         self.ftp = ftplib.FTP()
-        self.ftp.connect(host, port, timeout=20)
-        self.ftp.login()
+        try:
+            self.ftp.connect(host, port, timeout=20)
+            self.ftp.login()
+        except (OSError, ftplib.Error) as error:
+            sys.exit(f"{label}: can't connect to the FTP server at {host}:{port} ({error}). "
+                     "Is the FTP app running on the console?")
 
     def _path(self, path):
         return f"{self.root}/{path}"
