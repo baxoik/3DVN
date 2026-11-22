@@ -26,6 +26,7 @@
 !/tests/test_check_scripts.py
 !/tests/test_build_mahoyo_story_preview.py
 !/tests/test_recover_mahoyo_missing_images.py
+!/tests/test_savefile.c
 /witch on the holy night/
 /g-senjou no maou/
 *.map

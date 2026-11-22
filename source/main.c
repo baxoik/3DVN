@@ -27,6 +27,7 @@
 #include "nvl_page.h"
 #include "pack.h"
 #include "ftp.h"
+#include "savefile.h"
 
 /* The default 32 KB stack is too small for the script VM state. */
 u32 __stacksize__ = 256 * 1024;
@@ -54,11 +55,9 @@ static float top_w = 400.0f;
 #define SETTINGS_DIR ROOT_DIR "/settings"
 #define PACK_SUFFIX ".3vp"   /* a game packed into one archive: games/<name>.3vp */
 #define MAX_GAMES 32
-#define MAX_SPRITES 8
 #define MAX_TEXTURES 32
 #define MAX_GALLERY_ITEMS 512
 #define GALLERY_PAGE_SIZE 6
-#define SAVE_MAGIC 0x32564433u
 #define SAVE_SLOTS 15
 #define LIST_ROWS 8
 #define FF_SPEED 8.0f
@@ -67,7 +66,6 @@ static float top_w = 400.0f;
 #define AUTO_DELAY_BASE 1.0f      /* unvoiced lines: base reading time ... */
 #define AUTO_DELAY_PER_CHAR 0.04f /* ... plus this per character */
 #define AUTO_DELAY_MAX 6.0f
-#define BACKLOG_MAX 40
 #define LOG_SCALE 0.45f
 #define LOG_WIDTH 372.0f
 #define LOG_LINE_H 14.0f
@@ -104,21 +102,7 @@ typedef struct {
 	unsigned last_used;
 } CacheEntry;
 
-typedef struct {
-	int active;
-	char name[GS_NAME_LEN];
-	char asset[GS_STR_LEN];
-	char pos[GS_NAME_LEN];
-	float alpha, from, to, duration, elapsed;
-} Sprite;
 
-typedef struct {
-	char bg[GS_STR_LEN];
-	char bg_prev[GS_STR_LEN];
-	char music[GS_STR_LEN];
-	float bg_elapsed, bg_duration;
-	Sprite sprites[MAX_SPRITES];
-} Scene;
 
 /* Transient screen effects; not saved. */
 static float shake_left, shake_total, shake_amp, flash_left, flash_total, flash_shade;
@@ -128,31 +112,9 @@ static float cam_from[3], cam_to[3] = {0.0f, 0.0f, 1.0f}, cam_t = 1.0f, cam_dur;
 static float hop_t[16]; /* seconds left, indexed by sprite slot */
 static float cur_hop;
 
-typedef struct {
-	char speaker[GS_NAME_LEN];
-	char text[GS_TEXT_LEN];
-	unsigned color;
-} BacklogEntry;
 
-typedef struct {
-	int count, start;
-	BacklogEntry entries[BACKLOG_MAX];
-} Backlog;
 
-typedef struct {
-	unsigned magic;
-	unsigned script_hash;
-	long long saved_at;
-	char preview[72];
-} SaveHeader;
 
-typedef struct {
-	SaveHeader header;
-	GsState state;
-	Scene scene;
-	GsEvent event;
-	Backlog backlog;
-} SaveData;
 
 typedef struct {
 	int used;
@@ -1632,147 +1594,17 @@ static void make_preview(char *out, size_t size)
 	out[length] = '\0';
 }
 
-/* ---- Save files in one byte order on every console ----
-   A save is the SaveData struct as it is in memory. The 3DS (ARM) and the Wii U
-   (PowerPC) lay it out the same way (checked below), but the Wii U is big-endian. Saves
-   are written little-endian (the 3DS's order) everywhere, and a save in the other order
-   (e.g. from an older Wii U build) is converted when read, so a save copied between a
-   3DS and a Wii U loads on either. The event type is one byte on the 3DS (a short enum,
-   then padding) and four on the Wii U: in the file it is the first byte. */
-#if defined(__3DS__) || defined(__WIIU__)
-_Static_assert(sizeof(SaveData) == 66544, "save layout changed: 3DS and Wii U saves must match");
-#endif
-
-static int host_big_endian(void)
-{
-	const unsigned one = 1;
-	return *(const unsigned char *)&one == 0;
-}
-
-static void swap_bytes(void *field, size_t size)
-{
-	unsigned char *b = field;
-	for (size_t i = 0; i < size / 2; ++i) {
-		unsigned char t = b[i];
-		b[i] = b[size - 1 - i];
-		b[size - 1 - i] = t;
-	}
-}
-#define SWAP(field) swap_bytes(&(field), sizeof(field))
-
-static void swap_header(SaveHeader *h)
-{
-	SWAP(h->magic);
-	SWAP(h->script_hash);
-	SWAP(h->saved_at);
-}
-
-/* Reverses the byte order of every number in a save (all of them, used or not). */
-static void swap_save(SaveData *d)
-{
-	swap_header(&d->header);
-	GsState *st = &d->state;
-	SWAP(st->pc);
-	SWAP(st->var_count);
-	for (int i = 0; i < GS_MAX_VARS; ++i) {
-		SWAP(st->vars[i].value.is_str);
-		SWAP(st->vars[i].value.num);
-	}
-	SWAP(st->call_depth);
-	for (int i = 0; i < GS_MAX_CALLS; ++i) SWAP(st->call_stack[i]);
-	SWAP(st->pending_menu);
-	for (int i = 0; i < GS_MAX_CHOICES; ++i) SWAP(st->pending_map[i]);
-	SWAP(st->pending_count);
-	Scene *sc = &d->scene;
-	SWAP(sc->bg_elapsed);
-	SWAP(sc->bg_duration);
-	for (int i = 0; i < MAX_SPRITES; ++i) {
-		Sprite *sp = &sc->sprites[i];
-		SWAP(sp->active);
-		SWAP(sp->alpha);
-		SWAP(sp->from);
-		SWAP(sp->to);
-		SWAP(sp->duration);
-		SWAP(sp->elapsed);
-	}
-	GsEvent *ev = &d->event;
-	SWAP(ev->color);
-	SWAP(ev->seconds);
-	SWAP(ev->choice_count);
-	SWAP(ev->line);
-	Backlog *log = &d->backlog;
-	SWAP(log->count);
-	SWAP(log->start);
-	for (int i = 0; i < BACKLOG_MAX; ++i) SWAP(log->entries[i].color);
-}
-
-/* The start of GsEvent differs: the 3DS has a 1-byte type followed by the speaker name
-   (offset 1), the Wii U a 4-byte type and the speaker at offset 4; both end before
-   `color` at offset 36. In the file this region is the 3DS's: type in byte 0, speaker
-   from byte 1. Older big-endian Wii U saves have type in byte 3, speaker from byte 4. */
-#define EVENT_HEAD ((size_t)offsetof(GsEvent, color))
-
-static void event_head_to_file(SaveData *d)
-{
-	unsigned char head[EVENT_HEAD];
-	memset(head, 0, sizeof(head));
-	head[0] = (unsigned char)d->event.type;
-	memcpy(head + 1, d->event.speaker, sizeof(d->event.speaker) - 1);
-	memcpy(&d->event, head, sizeof(head));
-}
-
-static void event_head_from_file(SaveData *d, int old_wiiu)
-{
-	unsigned char head[EVENT_HEAD];
-	memcpy(head, &d->event, sizeof(head));
-	const unsigned char *speaker = head + (old_wiiu ? 4 : 1);
-	size_t room = sizeof(head) - (size_t)(speaker - head);
-	if (room > sizeof(d->event.speaker) - 1) room = sizeof(d->event.speaker) - 1;
-	GsEventType type = (GsEventType)head[old_wiiu ? 3 : 0];
-	char name[sizeof(d->event.speaker)];
-	memset(name, 0, sizeof(name));
-	memcpy(name, speaker, room);
-	d->event.type = type;
-	memcpy(d->event.speaker, name, sizeof(name));
-}
-
-/* After reading a header: 1 if it is a save (converted to this console's order). */
-static int header_from_file(SaveHeader *h)
-{
-	if (h->magic == SAVE_MAGIC) return 1;
-	SaveHeader swapped = *h;
-	swap_header(&swapped);
-	if (swapped.magic != SAVE_MAGIC) return 0;
-	*h = swapped;
-	return 1;
-}
-
-/* After reading a whole save: converts it to this console's order and layout; 0 if it
-   is not a save. */
-static int save_from_file(SaveData *d)
-{
-	int native = d->header.magic == SAVE_MAGIC;
-	if (!native) {
-		SaveHeader swapped = d->header;
-		swap_header(&swapped);
-		if (swapped.magic != SAVE_MAGIC) return 0;
-	}
-	int little_endian_file = native != host_big_endian();
-	if (!native) swap_save(d);
-	event_head_from_file(d, !little_endian_file);
-	return 1;
-}
-
 static void refresh_slots(void)
 {
 	for (int slot = 0; slot < SAVE_SLOTS; ++slot) {
 		char path[200];
 		SaveHeader header;
+		unsigned char head[SAVE_HEADER_SIZE];
 		save_path(slot, path, sizeof(path));
 		memset(&slots[slot], 0, sizeof(slots[slot]));
 		FILE *file = fopen(path, "rb");
 		if (file != NULL) {
-			if (fread(&header, sizeof(header), 1, file) == 1 && header_from_file(&header)) {
+			if (fread(head, sizeof(head), 1, file) == 1 && save_peek(head, sizeof(head), &header)) {
 				slots[slot].used = 1;
 				slots[slot].saved_at = header.saved_at;
 				header.preview[sizeof(header.preview) - 1] = '\0';
@@ -1807,12 +1639,12 @@ static int save_slot(int slot)
 	data->event = event;
 	data->backlog = backlog;
 
-	/* little-endian on every console (see swap_save) */
-	event_head_to_file(data);
-	if (host_big_endian()) swap_save(data);
+	/* one format on every console and computer (savefile.c) */
+	unsigned char *encoded = malloc(SAVE_FILE_SIZE);
+	if (encoded != NULL) save_encode(data, encoded);
 	unsigned char loop_data[GS_BGLOOP_SAVE_SIZE];
-	int ok = gs_bgloop_encode(&bgloop, loop_data)
-		&& fwrite(data, sizeof(*data), 1, file) == 1
+	int ok = encoded != NULL && gs_bgloop_encode(&bgloop, loop_data)
+		&& fwrite(encoded, SAVE_FILE_SIZE, 1, file) == 1
 		&& fwrite(loop_data, sizeof(loop_data), 1, file) == 1;
 	if (ok && config.num[NUM_NVL_ACCUMULATE]) {
 		unsigned char page_data[NVL_PAGE_SAVE_MAX_BYTES];
@@ -1822,6 +1654,7 @@ static int save_slot(int slot)
 	}
 	ok = fclose(file) == 0 && ok;
 	free(data);
+	free(encoded);
 	if (ok) {
 		remove(path);
 		ok = rename(temp_path, path) == 0;
@@ -1965,7 +1798,10 @@ static int load_slot(int slot)
 	save_path(slot, path, sizeof(path));
 	SaveData *data = malloc(sizeof(*data));
 	FILE *file = data != NULL ? fopen(path, "rb") : NULL;
-	int read_ok = file != NULL && fread(data, sizeof(*data), 1, file) == 1 && save_from_file(data);
+	unsigned char *encoded = data != NULL ? malloc(SAVE_FILE_SIZE) : NULL;
+	int read_ok = file != NULL && encoded != NULL && fread(encoded, SAVE_FILE_SIZE, 1, file) == 1
+		&& save_decode(encoded, SAVE_FILE_SIZE, data);
+	free(encoded);
 	GsBgLoop loaded_loop = {0};
 	NvlPage loaded_page;
 	nvl_page_clear(&loaded_page);
@@ -4635,10 +4471,8 @@ static int write_local(const char *path, const unsigned char *data, size_t size)
 /* When a save was made, read in either byte order; 0 if the data is not a save. */
 static long long save_data_time(const unsigned char *data, size_t size)
 {
-	if (data == NULL || size < sizeof(SaveHeader)) return 0;
 	SaveHeader header;
-	memcpy(&header, data, sizeof(header));
-	return header_from_file(&header) ? header.saved_at : 0;
+	return data != NULL && save_peek(data, size, &header) ? header.saved_at : 0;
 }
 
 /* A save in the shared format (the byte order every console reads); other data as is. */
@@ -4647,15 +4481,9 @@ static unsigned char *portable_save(const unsigned char *data, size_t size)
 	unsigned char *out = malloc(size ? size : 1);
 	if (out == NULL) return NULL;
 	memcpy(out, data, size);
-	if (size < sizeof(SaveData)) return out;
-	SaveData *save = malloc(sizeof(*save));
+	SaveData *save = size >= SAVE_FILE_SIZE ? malloc(sizeof(*save)) : NULL;
 	if (save == NULL) return out;
-	memcpy(save, data, sizeof(*save));
-	if (save_from_file(save)) {
-		event_head_to_file(save);
-		if (host_big_endian()) swap_save(save);
-		memcpy(out, save, sizeof(*save));
-	}
+	if (save_decode(data, size, save)) save_encode(save, out);   /* rest of the file unchanged */
 	free(save);
 	return out;
 }
