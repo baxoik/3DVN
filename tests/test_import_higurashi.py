@@ -1,6 +1,7 @@
 """Tests for tools/import_higurashi.py on a small made-up Higurashi chapter.
 
 Run from the repository root:  python3 -m unittest tests.test_import_higurashi"""
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -181,6 +182,55 @@ class ImportHigurashiTests(unittest.TestCase):
         self.assertIn('character c_mion "Mion" #5ec69a', (out / "characters.3vs").read_text())
         self.assertIn('"Censored text."', adv)                                 # inlined section
         self.assertIn("default_display adv", (out / "game.3vc").read_text())
+
+    def test_choices_and_story_flags(self):
+        """Himatsubushi's TIPS 9: a red/blue box choice, flags set and tested later;
+        and a console-only choice that 07th-Mod's default settings leave out."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        game, out = Path(temp.name) / "Higurashi", Path(temp.name) / "out"
+        sa = game / "HigurashiEp04_Data" / "StreamingAssets"
+        for folder in ("Scripts", "CG"):
+            (sa / folder).mkdir(parents=True)
+        (sa / "Scripts" / "flow.txt").write_text(
+            'void Game() { CallScript("hima_001"); JumpSection("Title"); }')
+        (sa / "Scripts" / "hima_001.txt").write_text("""void main()
+{
+	if (GetGlobalFlag(GChoiceMode) > 0) { char Bad[2]; Bad[0] = "Console only"; Select(1, Bad); }
+	char Item[2];
+	if (GetGlobalFlag(GLanguage) == 1) { Item[0] = "Red box"; Item[1] = "Blue box"; }
+	else { Item[0] = "JP red"; Item[1] = "JP blue"; }
+	Select( 2, Item );
+	if (LoadValueFromLocalWork( SelectResult ) == 0) {
+		SetGlobalFlag(redbox , TRUE);
+		CallSection( "red" );
+	} else {
+		SetGlobalFlag(bluebox , TRUE);
+	}
+	if(GetGlobalFlag(bluebox) == 1) { OutputLine(NULL, "jp", NULL, "It was blue.", Line_Normal); }
+}
+void red()
+{
+	OutputLine(NULL, "jp", NULL, "It was red.", Line_Normal);
+}
+""")
+        result = subprocess.run([sys.executable, "-I", str(TOOL), str(game), str(out), "--no-tips"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        script = (out / "ch" / "hima_001.3vs").read_text()
+        self.assertNotIn("Console only", script)
+        self.assertIn('menu\n  choice "Red box"\n    set hig_select = 0\n  choice "Blue box"\n'
+                      '    set hig_select = 1\nend', script)
+        self.assertIn("if hig_select == 0\nset hig_redbox = 1\n\"It was red.\"", script)
+        self.assertIn("else\nset hig_bluebox = 1\nend", script)
+        self.assertIn('if hig_bluebox == 1\n"It was blue."', script)
+        walker = ROOT / "tests" / "walk_story.c"
+        if shutil.which("cc"):
+            exe = Path(temp.name) / "walk"
+            subprocess.run(["cc", "-O1", f"-I{ROOT / 'source'}", str(walker), str(ROOT / "source" / "gs.c"),
+                            str(ROOT / "source" / "wrap.c"), "-o", str(exe)], check=True)
+            walk = subprocess.run([str(exe), str(out), "8", "1"], capture_output=True, text=True)
+            self.assertIn("0 problems", walk.stdout + walk.stderr)
 
 
 if __name__ == "__main__":

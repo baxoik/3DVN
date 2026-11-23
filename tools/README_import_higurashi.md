@@ -66,6 +66,20 @@ Not converted: lip sync (the closed-mouth frame is shown), sliding sprites,
 colour filters (red flashes, night/sunset tints), the title screen and the
 extras (`omake`). The converter lists what it skipped.
 
+## Chapters
+
+Tested end to end with Ch.1 Onikakushi, as installed and with 07th-Mod. The
+other main chapters were checked against 07th-Mod's scripts for them (the
+order of play, TIPS, every command): Ch.2 Watanagashi, Ch.3 Tatarigoroshi,
+Ch.4 Himatsubushi, Ch.5 Meakashi, Ch.6 Tsumihoroboshi, Ch.7 Minagoroshi and
+Ch.8 Matsuribayashi are read completely, apart from a few effects (the zoom in
+Ch.8). Ch.5-8 name their scripts `_meak_001` and so on and say in flow.txt
+which TIPS are new; both are handled. Story choices (Himatsubushi's red and
+blue box) become 3DVN menus, and the flags they set are kept while playing.
+07th-Mod's console-only choices are left out, as in the original game.
+
+Not supported: Rei, Hou+ and the console arcs, which are organised differently.
+
 ## Adding 07th-Mod
 
 Install it into a copy of the game, so the Steam folder stays as it is. The

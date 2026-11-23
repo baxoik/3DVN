@@ -63,7 +63,9 @@ def ident(s):
 
 
 # ---- the game's script language: C-like calls inside void functions ----
-TOKEN = re.compile(r'\s+|//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|-?\d+|[A-Za-z_][A-Za-z0-9_]*|.', re.S)
+# Strings never span lines: a stray quote (some 07th-Mod scripts have \\"" at a line end,
+# which the game tolerates) then only spoils its own line.
+TOKEN = re.compile(r'\s+|//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|-?\d+|[A-Za-z_][A-Za-z0-9_]*|.', re.S)
 
 
 def tokens(text):
@@ -102,9 +104,11 @@ def parse_functions(text):
 
 def branch(toks, j):
     """the statement or { block } at j -> (statements, index after it)"""
+    if j >= len(toks) or toks[j] == "}":   # an if whose body was commented out
+        return [], j
     if toks[j] == "{":
         d, k = 1, j + 1
-        while d:
+        while d and k < len(toks):
             d += toks[k] == "{"
             d -= toks[k] == "}"
             k += 1
@@ -123,7 +127,7 @@ def branch(toks, j):
 
 def _end_of_if(toks, j):
     depth, k = 0, j + 1
-    while True:
+    while k < len(toks):
         depth += toks[k] == "("
         depth -= toks[k] == ")"
         k += 1
@@ -141,7 +145,7 @@ def statements(toks):
         t = toks[i]
         if t == "if":
             depth, j = 0, i + 1     # the condition "( ... )"
-            while True:
+            while j < len(toks):
                 depth += toks[j] == "("
                 depth -= toks[j] == ")"
                 j += 1
@@ -154,9 +158,16 @@ def statements(toks):
                 other, j = branch(toks, j + 1)
             out.append(("if", cond, then, other))
             i = j
+        elif (re.fullmatch(r"[A-Za-z_]\w*", t) and i + 6 < len(toks) and toks[i + 1] == "["
+              and toks[i + 3] == "]" and toks[i + 4] == "=" and toks[i + 5].startswith('"')):
+            # Item[0] = "text";  (the options of a choice)
+            out.append(("assign", t, int(toks[i + 2]) if toks[i + 2].isdigit() else 0, unstring(toks[i + 5])))
+            i += 6
+            if i < len(toks) and toks[i] == ";":
+                i += 1
         elif re.fullmatch(r"[A-Za-z_]\w*", t) and i + 1 < len(toks) and toks[i + 1] == "(":
             depth, j, args, cur = 0, i + 1, [], []
-            while True:
+            while j < len(toks):
                 tok = toks[j]
                 if tok == "(":
                     depth += 1
@@ -291,11 +302,14 @@ class Converter:
         self.indexes = {}
         self.sources = {}     # converted audio name -> source file
         self.parsed = {}
+        self.arrays = {}      # choice texts: Item[0] = "..."
+        self.layer_pos = {}   # sprite layer -> (left, top), for ChangeBustshot
         self.movies = {}
         self.chars = {}       # character id -> (name, colour)
         # settings the scripts test (07th-Mod), decided at conversion time
         self.flags = {"GADVMode": 1 if a.adv else 0, "GCensor": a.censor, "GHideCG": 0,
-                      "GLipSync": 0, "GArtStyle": 0, "GVideoOpening": 1 if a.no_movies else 2}
+                      "GLipSync": 0, "GArtStyle": 0, "GVideoOpening": 1 if a.no_movies else 2,
+                      "GChoiceMode": 0, "GLanguage": 1}   # no console-only choices, as the original
         wide = re.search(r'SetScreenAspect\(\s*"0\.5625"', init) is not None
         self.canvas_w = CANVAS_H * 16 / 9 if wide else 640
         self.scale = min(SCREEN_W / self.canvas_w, SCREEN_H / CANVAS_H)
@@ -394,17 +408,64 @@ class Converter:
             self.parsed[name] = parse_functions(open(path, encoding="utf-8-sig", errors="replace").read()) if path else {}
         return self.parsed[name]
 
-    def run_block(self, stmts, out, where, depth=0):
+    def runtime(self, cond):
+        """a condition on story state (not a setting) -> a 3DVN expression, else None"""
+        text = " ".join(cond)
+        names = re.findall(r"GetGlobalFlag\s*\(\s*(\w+)\s*\)", text)
+        if not ("SelectResult" in text or any(n not in self.flags for n in names)):
+            return None
+        text = re.sub(r"GetGlobalFlag\s*\(\s*(\w+)\s*\)",
+                      lambda m: str(self.flags[m.group(1)]) if m.group(1) in self.flags else "hig_" + m.group(1), text)
+        text = re.sub(r"LoadValueFromLocalWork\s*\(\s*SelectResult\s*\)", "hig_select", text)
+        text = re.sub(r"([<>=!])\s+=", r"\1=", text).replace("&&", " and ").replace("||", " or ")
+        text = text.replace("TRUE", "1").replace("FALSE", "0")
+        return re.sub(r"\s+", " ", text).strip()
+
+    def run_block(self, stmts, out, where, depth=0, file=None):
+        file = file or where.split(":")[0]
         for st in stmts:
             if st[0] == "if":
-                self.run_block(st[2] if self.condition(st[1], where) else st[3], out, where, depth)
-            elif st[1] == "ModCallScriptSection" and depth < 8:
-                file, section = st[2][0], st[2][1]
-                body = self.functions(file).get(section)
+                expr = self.runtime(st[1])
+                if expr is None:   # a setting: decided now
+                    self.run_block(st[2] if self.condition(st[1], where) else st[3], out, where, depth, file)
+                else:              # story state (a choice, a flag): decided while playing
+                    self.flush(out)
+                    out.append(f"if {expr}")
+                    self.run_block(st[2], out, where, depth, file)
+                    self.flush(out)
+                    if st[3]:
+                        out.append("else")
+                        self.run_block(st[3], out, where, depth, file)
+                        self.flush(out)
+                    out.append("end")
+            elif st[0] == "assign":
+                self.arrays.setdefault(st[1], {})[st[2]] = st[3]
+            elif st[1] == "Select":
+                self.flush(out)
+                items = self.arrays.get(st[2][1], {}) if len(st[2]) > 1 else {}
+                out.append("menu")
+                for k in range(st[2][0] if isinstance(st[2][0], int) else len(items)):
+                    out += [f"  choice {quote(items.get(k, f'Choice {k + 1}'))}", f"    set hig_select = {k}"]
+                out.append("end")
+            elif st[1] in ("SetGlobalFlag", "SetLocalFlag") and st[2] and st[2][0] not in self.flags:
+                value = {"TRUE": 1, "FALSE": 0}.get(st[2][1], st[2][1]) if len(st[2]) > 1 else 0
+                if isinstance(value, int):
+                    out.append(f"set hig_{st[2][0]} = {value}")
+            elif st[1] == "CallScript" and depth < 8:   # a story script running another one
+                self.run_block(self.functions(st[2][0]).get("main", []), out, st[2][0], depth + 1)
+            elif st[1] == "CallSection" and depth < 8 and file:   # a section of the same file
+                body = self.functions(file).get(st[2][0])
                 if body is None:
-                    warn("missing script section", f"{file} {section}")
+                    warn("missing script section", f"{file} {st[2][0]}")
                 else:
-                    self.run_block(body, out, f"{file}:{section}", depth + 1)
+                    self.run_block(body, out, f"{file}:{st[2][0]}", depth + 1, file)
+            elif st[1] == "ModCallScriptSection" and depth < 8:
+                f, section = st[2][0], st[2][1]
+                body = self.functions(f).get(section)
+                if body is None:
+                    warn("missing script section", f"{f} {section}")
+                else:
+                    self.run_block(body, out, f"{f}:{section}", depth + 1, f)
             else:
                 self.statement(st[1], st[2], out, where)
 
@@ -540,6 +601,7 @@ class Converter:
             top = self.yoff + (CANVAS_H / 2 + y - h / 2) * self.scale
             pic = real
             fade = f" fade {ms(seconds)}" if isinstance(seconds, int) and seconds > 0 else ""
+            self.layer_pos[layer] = (round(left), round(top))
             out.append(f"show L{layer} {pic} at {round(left)} {round(top)}{fade}")
         elif cmd in ("FadeBustshot", "FadeBustshotWithFiltering"):
             self.flush(out)
@@ -555,7 +617,7 @@ class Converter:
             self.flush(out)
             if isinstance(args[0], int) and args[0] > 0:
                 out.append(f"wait {ms(args[0])}")
-        elif cmd == "PlayBGM":
+        elif cmd in ("PlayBGM", "ModPlayBGM"):
             name = self.sound(self.bgm, args[1], "bgm")
             if name:
                 self.used["audio"].add(name)
@@ -563,7 +625,10 @@ class Converter:
                 out.append(f"music {name}")
             else:
                 warn("missing music", f"{where}: {args[1]}")
-        elif cmd in ("FadeOutBGM", "StopBGM"):
+        elif cmd == "StopAllSound":
+            out += ["music stop", "sfx stop"]
+            self.music_channel = None
+        elif cmd in ("FadeOutBGM", "StopBGM", "ModFadeOutBGM", "FadeOutMultiBGM"):
             if self.music_channel is not None and args and args[0] == self.music_channel:
                 out.append("music stop")
                 self.music_channel = None
@@ -590,7 +655,7 @@ class Converter:
             if name:
                 self.used["audio"].add(name)
                 out.append(f"sfx {name}")
-        elif cmd in ("ShakeScreen", "ShakeScreenSx", "StartShakingOfAllObjects"):
+        elif cmd in ("ShakeScreen", "ShakeScreenSx", "StartShakingOfAllObjects", "StartShakingOfWindow"):
             self.flush(out)
             out.append("shake 0.40 6")
         elif cmd in ("DisableWindow", "SetValidityOfInput", "SetSpeedOfMessage", "GetAchievement",
@@ -602,10 +667,27 @@ class Converter:
                      "SetGlobalFlag", "SetLocalFlag", "ModSetMainFontOutlineWidth", "ModSetConfigFontSize",
                      "ModGenericCall", "ModNVLModeSettingLoad", "ModADVModeSettingLoad",
                      "ModNVLADVModeSettingLoad", "WaitToFinishSEPlaying", "WaitToFinishVoicePlaying",
-                     "TerminateShakingOfAllObjects", "TerminateShakingOfWindow"):
+                     "TerminateShakingOfAllObjects", "TerminateShakingOfWindow", "SetColorOfMessage",
+                     "SetValidityOfSkipping", "SetValidityOfLoading", "SetValidityOfUserEffectSpeed",
+                     "SetFontOfMessage", "ActivateScreenEffectForcedly", "PreloadBitmap", "DisplayWindow",
+                     "ChangeVolumeOfBGM", "DisableLoopingOfBGM", "ModSetHighestChapterFlag",
+                     "ModEnableNVLModeInADVMode", "ModDisableNVLModeInADVMode", "SetNameColor",
+                     "ResetNameColor", "StoreValueToLocalWork", "GetAchievement", "CheckTipsAchievements"):
             pass   # presentation details 3DVN handles itself
         elif cmd in ("DrawFilm", "FadeFilm", "Negative", "ModSetLayerFilter"):
             warn("colour filter (tint / negative) not converted")
+        elif cmd == "ChangeBustshot":   # (layer, picture, ms, wait): a new picture in place
+            self.flush(out)
+            path, real = self.picture(args[1], "sprite")
+            if not path or args[0] not in self.layer_pos:
+                warn("ChangeBustshot not converted", f"{where}: {args[1]}")
+                return
+            self.used["sprites"][real] = path
+            left, top = self.layer_pos[args[0]]
+            fade = f" fade {ms(args[2])}" if len(args) > 2 and isinstance(args[2], int) and args[2] > 0 else ""
+            out.append(f"show L{args[0]} {real} at {left} {top}{fade}")
+        elif cmd in ("DrawFragment", "StopFragment"):
+            warn("fragment effect not converted", where)
         elif cmd == "ModPlayMovie":
             self.flush(out)
             name = self.movie(args[0])
@@ -620,27 +702,41 @@ class Converter:
     # ---- order of play, from flow.txt ----
     def flow(self, prefix):
         funcs = parse_functions(open(self.script_path("flow"), encoding="utf-8-sig", errors="replace").read())
-        steps, seen, state = [], set(), {"chapter": 0}
+        steps, seen, state = [], set(), {"chapter": 0, "range": None}
         helpers = {"SetDay", "ViewTips", "ViewTipsDisplay", "BrandLogo", "ChapterPreview", "Title"}
+
+        def run(stmts):
+            """False once a JumpSection has left this section"""
+            for st in stmts:
+                if st[0] == "if":
+                    # Ch.5-8 wrap every day in "if (s_jump <= N)" (to resume mid-arc)
+                    if not run(st[2]) or not run(st[3]):
+                        return False
+                    continue
+                cmd, args = st[1], st[2]
+                if cmd == "CallScript":
+                    if not steps or steps[-1] != ("script", args[0]):
+                        steps.append(("script", args[0]))
+                elif cmd == "StoreValueToLocalWork" and args and args[0] == "ChapterNumber":
+                    state["chapter"] = args[1]
+                elif cmd == "StoreValueToLocalWork" and args and args[0] in ("NewTipsStart", "NewTipsCount"):
+                    start, count = state["range"] or (0, 0)
+                    state["range"] = (args[1], count) if args[0] == "NewTipsStart" else (start, args[1])
+                elif cmd == "CallSection" and args[0] == "ViewTips":
+                    # Ch.5-8 say which TIPS are new; Ch.1-4 keep that in the game's code
+                    steps.append(("tips", ("range",) + state["range"] if state["range"] else state["chapter"]))
+                    state["range"] = None
+                elif cmd in ("CallSection", "JumpSection") and args[0] not in helpers:
+                    walk(args[0])
+                    if cmd == "JumpSection":
+                        return False
+            return True
 
         def walk(section):
             if section in seen or section not in funcs:
                 return
             seen.add(section)
-            for st in funcs[section]:
-                if st[0] != "call":
-                    continue
-                cmd, args = st[1], st[2]
-                if cmd == "CallScript":
-                    steps.append(("script", args[0]))
-                elif cmd == "StoreValueToLocalWork" and args and args[0] == "ChapterNumber":
-                    state["chapter"] = args[1]
-                elif cmd == "CallSection" and args[0] == "ViewTips":
-                    steps.append(("tips", state["chapter"]))
-                elif cmd in ("CallSection", "JumpSection") and args[0] not in helpers:
-                    walk(args[0])
-                    if cmd == "JumpSection":
-                        return
+            run(funcs[section])
 
         walk("Game")
         return steps
@@ -649,16 +745,22 @@ class Converter:
         if Image is None:
             sys.exit("Pillow is required: pip install pillow")
         names = [os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(self.sa, "Scripts", "*.txt"))]
-        prefix = Counter(n.split("_")[0] for n in names if "_" in n and n.split("_")[0] in ARCS).most_common(1)
-        prefix = prefix[0][0] if prefix else None
-        if not prefix:
-            sys.exit("no Higurashi chapter scripts found (onik_*, wata_*, ...)")
-        title = self.a.title or f"Higurashi - {ARCS[prefix]}"
+        # Ch.1-4 name scripts onik_001..., Ch.5-8 _meak_001...
+        found = Counter(n.split("_")[1] if n.startswith("_") else n.split("_")[0]
+                        for n in names if "_" in n.lstrip("_")).most_common()
+        arc = next((p for p, _ in found if p in ARCS), None)
+        if not arc:
+            sys.exit("no Higurashi chapter scripts found (onik_*, wata_*, _meak_* ...)")
+        prefix = ("_" + arc) if any(n.startswith("_" + arc + "_") for n in names) else arc
+        title = self.a.title or f"Higurashi - {ARCS[arc]}"
         steps = self.flow(prefix)
         if not any(s[0] == "script" for s in steps):
             sys.exit("could not read the chapter order from flow.txt")
         dll = os.path.join(self.data, "Managed", "Assembly-CSharp.dll")
         tips = read_tips(dll, prefix) if os.path.isfile(dll) and not self.a.no_tips else []
+        if not tips and not self.a.no_tips:   # no titles in the game's code: name them by file
+            tips = [(n, 10 ** 6, n.replace("_", " ").strip()) for n in sorted(names)
+                    if re.fullmatch(re.escape(prefix) + r"_tips_\d+", n)]
         print(f"{title}: {sum(s[0] == 'script' for s in steps)} story scripts, {len(tips)} TIPS")
 
         os.makedirs(os.path.join(self.out, "ch"), exist_ok=True)
@@ -667,6 +769,7 @@ class Converter:
         for i in range(len(steps) + 1):
             flow += [f'if _hig_step == "s{i}"', f"  jump s{i}", "end"]
         shown = 0
+        listed = set()
         converted = set()
         for i, (kind, value) in enumerate(steps):
             flow.append(f"label s{i}")
@@ -679,12 +782,19 @@ class Converter:
                     self.write(value, self.convert(value))
                     converted.add(value)
                 flow += [f'set _hig_step = "s{i + 1}"', f"script ch/{ident(value)}"]
+            elif isinstance(value, tuple):   # Ch.5-8: "these TIPS are new" (start, count)
+                new = sorted(tips)[value[1]:value[1] + value[2]]
+                for t in new:
+                    listed.add(t[0])
+                flow += self.tips_menu(new, f"s{i}", f"s{i + 1}", converted)
             else:   # TIPS newly unlocked at this point
                 new = [t for t in tips if shown < t[1] <= value]
                 shown = max(shown, value)
+                for t in new:
+                    listed.add(t[0])
                 flow += self.tips_menu(new, f"s{i}", f"s{i + 1}", converted)
         flow.append(f"label s{len(steps)}")
-        late = [t for t in tips if t[1] > shown]
+        late = [t for t in tips if t[0] not in listed]
         if late:
             flow.append(f'set _hig_step = "s{len(steps)}"')
             flow += self.tips_menu(late, f"s{len(steps)}", "end", converted)
