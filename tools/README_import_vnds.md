@@ -151,6 +151,22 @@ VNDS player skips too.
   version of 3DVN or later on every device: their saves carry the extra
   variables in an added block that older builds don't read.
 
+## Never 7 with the "end of infinity" assets
+
+`import_never7.py` converts Never 7 with the VNDS release's script but the pictures,
+voices and music of "Never 7 - the end of infinity" for LÖVE (`n7e.love`), read straight
+from the .love file:
+
+    python3 tools/import_never7.py "<VNDS Never 7 folder>" n7e.love games/never7 [--music pc|psp]
+
+- backgrounds and sprites from `upscale/` (twice the VNDS size: scaled for the 3DS screen,
+  full size in `hd/` for PC, Wii U and Android);
+- voices and sound effects from `sound/` (WAV, converted to Ogg Vorbis);
+- music from `music/pc/` (default) or `music/psp/`.
+
+The few pictures the .love file lacks (VNDS-only split CGs) come from the VNDS release.
+Any other import_vnds.py option can be added at the end.
+
 ## Checking the result
 
 `tests/walk_story.c` plays a converted game many times with random choices

@@ -662,8 +662,11 @@ class Converter:
                     image = image.convert("RGB")
                 else:
                     image = image.convert("RGBA")
-                w = max(1, round(image.width * self.scale))
-                h = max(1, round(image.height * self.scale))
+                # pixels per canvas unit: 1, or more for higher-resolution replacement art
+                # (see import_never7.py); the 3DS size follows the canvas, hd/ keeps the art
+                factor = assets.factor(key) if hasattr(assets, "factor") else 1.0
+                w = max(1, round(image.width / factor * self.scale))
+                h = max(1, round(image.height / factor * self.scale))
                 if w > 1024 or h > 1024:   # e.g. a tall scrolling picture: shrink it to fit
                     fit = 1024 / max(w, h)
                     warn("picture too large for the 3DS, shrunk to fit 1024x1024",
@@ -716,8 +719,9 @@ class Converter:
             return
         source = self.snd.path(key)
         temp = None
-        if source is None:
-            temp = target_ogg + ".src" + data_ext
+        if source is None:   # from an archive: a temporary file named after what it really is
+            real_ext = ".wav" if data[:4] == b"RIFF" else ".ogg" if data[:4] == b"OggS" else data_ext
+            temp = target_ogg + ".src" + real_ext
             with open(temp, "wb") as handle:
                 handle.write(data)
             source = temp
