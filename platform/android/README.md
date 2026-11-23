@@ -1,8 +1,12 @@
 # 3DVN for Android (colour phones and tablets)
 
 The 3DS / Wii U / PC engine running on Android through SDL2: the same game folders, saves,
-Continue and save sync, in the PC's single-screen layout, full screen and landscape. (The
-VNDS Android e-ink reader is a separate app, for e-ink devices.)
+Continue and save sync, full screen. Landscape uses the PC's single-screen layout; portrait
+stacks the two screens like a 3DS (tap the top screen for the next line). (The VNDS Android
+e-ink reader is a separate app, for e-ink devices.)
+
+Third-party code in the app (SDL2, SDL2_ttf, FreeType, stb): see
+[THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
 ## Building
 

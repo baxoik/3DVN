@@ -22,8 +22,8 @@ android {
         applicationId = "io.github.davidgith1.threedvn"
         minSdk = 23   // fmemopen (Android 6.0)
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1.0"
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DANDROID_STL=c++_static")

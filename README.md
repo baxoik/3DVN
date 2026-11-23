@@ -1,6 +1,6 @@
 # 3DVN
 
-> **3DVN-wiiu.** This fork of [baxoik/3DVN](https://github.com/baxoik/3DVN) brings the engine to the **Wii U** (and PC), alongside the 3DS, and adds what's needed to play long voiced novels such as G-Senjou no Maou and Ever17 comfortably. See [platform/README.md](platform/README.md) for building and installing on Wii U and PC.
+> **3DVN-wiiu.** This fork of [baxoik/3DVN](https://github.com/baxoik/3DVN) brings the engine to the **Wii U**, **Android** and PC, alongside the 3DS, and adds what's needed to play long voiced novels such as G-Senjou no Maou and Ever17 comfortably. See [platform/README.md](platform/README.md) for building and installing on Wii U and PC, and [platform/android/README.md](platform/android/README.md) for Android.
 >
 > **Wii U**
 > - TV + GamePad: the scene on the TV at 1080p (or 720p), controls, menus, save slots, backlog and choices as touch buttons on the GamePad at its full resolution. Optional wide TV layout (text box and menus use the full 16:9 width; pictures keep their shape).
@@ -14,11 +14,21 @@
 > - Game archives (`.3vp`, one file per game), Ogg Vorbis and MS-ADPCM audio, HD images for PC / Wii U (`hd/`), looping sound effects with loop points.
 > - Auto mode, read-only fast-forward, text speed, volume sliders (master, music, voice), text on the top or bottom screen, smooth text reveal, italics (PC / Wii U), long lines shrunk to fit the text box, global variables (endings seen, unlocks), saves that keep working when a game's scripts are updated.
 >
+> **Android** ([platform/android/](platform/android/README.md))
+> - The same engine for colour phones and tablets: same game folders, saves, Continue and save sync. Landscape like the PC; portrait stacks the two screens like a 3DS.
+>
+> **Continue (all platforms)**
+> - Leaving the game in any way (Home, sleep, closing the app, START) keeps your place; **Continue** on the title picks it up. With save sync, Continue offers the newer place from another console.
+>
 > **Converters**
 > - [gsenjou-tools/](gsenjou-tools/README.md): build G-Senjou no Maou from your own Steam copy in one command (voices, HD art, the unrated patch if installed, chapter select).
 > - [ever17-tools/](ever17-tools/README.md): build Ever17 from one complete game folder (the PC release, ideally with the Himmel Edition patch applied) in one command: full voices, music, HD art, endings checklist. GPLv2, ported from Ever17Converter.
 >
-> No game content is included; the tools work on files from your own copy. Upstream has no license, so this fork is offered as-is. These changes were written with AI assistance (Claude Code).
+> - [tools/import_vnds.py](tools/README_import_vnds.md): any VNDS game, plus `import_never7.py` for Never 7 from "Never 7 - the end of infinity" (n7e.love), with the Append Story, movies and optionally the Steam remaster's music.
+> - [tools/import_higurashi.py](tools/README_import_higurashi.md): Higurashi When They Cry Hou from Steam (plain or with the 07th-Mod full patch; art styles, chapters, the opening movie).
+> - [tools/import_narcissu.py](tools/README_import_narcissu.md): the Narcissu 10th Anniversary Anthology from Steam (Majiro engine): 1st & 2nd, Zero, Iris, Sumire, Himeko.
+>
+> No game content is included; the tools work on files from your own copy. Third-party code in the builds: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Upstream has no license, so this fork is offered as-is. These changes were written with AI assistance (Claude Code).
 
 3DVN is a WIP native visual novel engine for the Nintendo 3DS, heavily inspired by VNDS for the original DS (you can find an archive [here](https://github.com/BASLQC/vnds)), but intended to allow for more advanced visual novels to be made, and for novels converted to the engine to provide a closer experience to their original PC versions.
 

@@ -9,7 +9,7 @@ A and B are 3DVN root folders, each one of:
   ftp://HOST[:PORT]/PATH   any FTP server and folder
   a local folder       e.g. a mounted SD card: /run/media/you/SD/3ds/3dvn
 
-  python3 tools/sync_saves.py 3ds:192.168.0.30 wiiu:192.168.0.25
+  python3 tools/sync_saves.py 3ds:192.168.0.30 wiiu:192.168.0.31
 
 What it syncs, per game:
   saves/<game>_<slot>.3vsav   each slot (and <game>_resume.3vsav) both ways: the newer one (by the time it was
