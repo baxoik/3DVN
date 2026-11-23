@@ -41,6 +41,7 @@ void threadFree(Thread thread);
 
 /* ---------- system ---------- */
 bool aptMainLoop(void);
+extern void (*vn_background_hook)(void);   /* called when the app goes to the background */
 
 /* Diagnostics in <ROOT_DIR>/boot.log: what the app was doing (shown with slow frames),
    and free-form lines (e.g. slow file loads). */

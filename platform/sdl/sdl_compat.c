@@ -1293,11 +1293,15 @@ static int desktop_event(const SDL_Event *e)
 	return 0;
 }
 
+void (*vn_background_hook)(void);
+
 bool aptMainLoop(void)
 {
 	SDL_Event e;
 	while (SDL_PollEvent(&e)) {
 		if (e.type == SDL_QUIT) running = 0;
+		/* Wii U HOME (and phones): the app goes to the background */
+		if (e.type == SDL_APP_WILLENTERBACKGROUND && vn_background_hook != NULL) vn_background_hook();
 		if (desktop && desktop_event(&e)) continue;
 		if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
 			touch_held = to_bottom(output_of_window(e.button.windowID), (float)e.button.x, (float)e.button.y, &touch_pos);

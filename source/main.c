@@ -133,7 +133,8 @@ typedef enum {
 } Panel;
 
 typedef enum { MODE_SELECT, MODE_TITLE, MODE_PLAY, MODE_ERROR } Mode;
-typedef enum { TITLE_START, TITLE_LOAD, TITLE_OPTIONS, TITLE_EXTRAS, TITLE_ENDINGS, TITLE_GUIDE, TITLE_SYNC } TitleItem;
+typedef enum { TITLE_START, TITLE_LOAD, TITLE_OPTIONS, TITLE_EXTRAS, TITLE_ENDINGS, TITLE_GUIDE, TITLE_SYNC,
+	TITLE_CONTINUE, TITLE_WAIT, TITLE_HERE, TITLE_SERVER } TitleItem;
 typedef enum {
 	PLAY_NONE, PLAY_TEXT, PLAY_MENU, PLAY_TIMER, PLAY_END, PLAY_VIDEO, PLAY_WAITBG, PLAY_GALLERY
 } Wait;
@@ -198,7 +199,7 @@ static int advance_visible;
 static int advance_available;
 static int menu_cursor;
 static int select_cursor;
-static int title_items[7], title_count, title_cursor;
+static int title_items[9], title_count, title_cursor;
 static int extras_available, extras_mode;
 static Panel panel;
 static int panel_cursor;
@@ -310,6 +311,10 @@ static int global_count;
 static void draw_endings_top(void);
 static void autosync_request(void);
 static void autosync_finish(void);
+static int sync_configured(void);
+static void sync_load_config(void);
+static void build_title_items(void);
+static int autosync_resume_written;   /* the next auto sync uploads the resume whatever the clocks say */
 static void draw_sync_top(void);
 static void sync_open(void);
 static void draw_guide_top(void);
@@ -1462,9 +1467,12 @@ static float backlog_height(int slot)
 
 /* ---------- saving ---------- */
 
+#define RESUME_SLOT (-1)   /* <game>_resume.3vsav: where the player left off */
+
 static void save_path(int slot, char *path, size_t size)
 {
-	snprintf(path, size, SAVES_DIR "/%s_%d" SAVE_EXT, game_name, slot + 1);
+	if (slot == RESUME_SLOT) snprintf(path, size, SAVES_DIR "/%s_resume" SAVE_EXT, game_name);
+	else snprintf(path, size, SAVES_DIR "/%s_%d" SAVE_EXT, game_name, slot + 1);
 }
 
 static void options_path(char *path, size_t size)
@@ -1632,7 +1640,8 @@ static void refresh_slots(void)
 	}
 }
 
-static int save_slot(int slot)
+/* Writes the game's state to a slot (RESUME_SLOT too). 1 on success. */
+static int write_save(int slot)
 {
 	mkdir(ROOT_DIR, 0777);
 	mkdir(SAVES_DIR, 0777);
@@ -1644,7 +1653,7 @@ static int save_slot(int slot)
 	FILE *file = data != NULL ? fopen(temp_path, "wb") : NULL;
 	if (file == NULL) {
 		free(data);
-		snprintf(notice, sizeof(notice), "save failed (cannot write)");
+		if (slot != RESUME_SLOT) snprintf(notice, sizeof(notice), "save failed (cannot write)");
 		return 0;
 	}
 	data->header.magic = SAVE_MAGIC;
@@ -1686,11 +1695,17 @@ static int save_slot(int slot)
 	}
 	if (!ok) {
 		remove(temp_path);
-		snprintf(notice, sizeof(notice), "save failed");
+		if (slot != RESUME_SLOT) snprintf(notice, sizeof(notice), "save failed");
 		return 0;
 	}
-	last_slot = slot;
 	read_save();
+	return 1;
+}
+
+static int save_slot(int slot)
+{
+	if (!write_save(slot)) return 0;
+	last_slot = slot;
 	snprintf(notice, sizeof(notice), "Saved to slot %d", slot + 1);
 	autosync_request();
 	return 1;
@@ -1943,9 +1958,67 @@ static int load_slot(int slot)
 	}
 	show_event();
 	ui_hidden = 0;
-	last_slot = slot;
-	snprintf(notice, sizeof(notice), "Loaded slot %d", slot + 1);
+	if (slot == RESUME_SLOT) {
+		snprintf(notice, sizeof(notice), "Continued where you left off");
+	} else {
+		last_slot = slot;
+		snprintf(notice, sizeof(notice), "Loaded slot %d", slot + 1);
+	}
 	return 1;
+}
+
+/* ---------- resume: where the player left off ----------
+   <game>_resume.3vsav (RESUME_SLOT) is written on every way of leaving a game: back to the
+   title or the game list, closing the app, HOME and sleep on the 3DS, HOME on the Wii U,
+   before a sync, and when a new chapter begins (in case the power goes). Only at a steady
+   moment, a line or a choice on screen; otherwise the previous resume stays. The title
+   offers it as Continue; the end of the story removes it. Same file on every console, the
+   PC and the Android reader, and synced (see Sync). */
+static int resume_due;   /* a chapter began: write at the next steady moment */
+
+static int resume_exists(void)
+{
+	char path[200];
+	save_path(RESUME_SLOT, path, sizeof(path));
+	FILE *file = fopen(path, "rb");
+	if (file == NULL) return 0;
+	fclose(file);
+	return 1;
+}
+
+static void resume_checkpoint(int sync)
+{
+	if (mode != MODE_PLAY || program == NULL || extras_mode || game_name[0] == '\0') return;
+	if (waiting != PLAY_TEXT && waiting != PLAY_MENU) return;   /* keep the previous one */
+	if (!write_save(RESUME_SLOT)) return;
+	resume_due = 0;
+	if (sync) {
+		autosync_resume_written = 1;
+		autosync_request();
+	}
+}
+
+/* HOME and sleep: write the resume (only the file; the network may be going away) */
+#ifdef __3DS__
+static void apt_hook(APT_HookType hook, void *param)
+{
+	(void)param;
+	if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) resume_checkpoint(0);
+}
+#endif
+#ifdef VN_SDL
+static void background_hook(void)
+{
+	resume_checkpoint(0);
+}
+#endif
+
+static void resume_forget(void)
+{
+	char path[200];
+	save_path(RESUME_SLOT, path, sizeof(path));
+	remove(path);
+	resume_due = 0;
 }
 
 static void fail_with(const char *text)
@@ -2048,6 +2121,8 @@ static char *load_include(const char *name, void *context)
 	unsigned char *data = read_file(path, &size);
 	if (data != NULL) {
 		hash_bytes(data, size);
+	} else if (vn_exists(path)) {
+		data = calloc(1, 1);   /* an empty file is empty text, not a missing one */
 	}
 	return (char *)data;
 }
@@ -2151,7 +2226,16 @@ static void start_game(const char *name)
 	ui_hidden = 0;
 	last_slot = 0;
 	waiting = PLAY_NONE;
+	build_title_items();
+	refresh_slots();
+	mode = MODE_TITLE;
+}
+
+static void build_title_items(void)
+{
 	title_count = 0;
+	/* Continue: a resume here, or one perhaps on the server (auto sync) */
+	if (resume_exists() || sync_configured()) title_items[title_count++] = TITLE_CONTINUE;
 	title_items[title_count++] = TITLE_START;
 	title_items[title_count++] = TITLE_LOAD;
 	title_items[title_count++] = TITLE_OPTIONS;
@@ -2161,8 +2245,6 @@ static void start_game(const char *name)
 	if (ending_count > 0) title_items[title_count++] = TITLE_ENDINGS;
 	title_items[title_count++] = TITLE_SYNC;
 	title_cursor = 0;
-	refresh_slots();
-	mode = MODE_TITLE;
 }
 
 static void begin_game(void)
@@ -2215,6 +2297,7 @@ static void start_extras(void)
 
 static void return_to_title(void)
 {
+	resume_checkpoint(1);
 	char name[sizeof(game_name)];
 	snprintf(name, sizeof(name), "%s", game_name);
 	stop_video();
@@ -2432,6 +2515,7 @@ static void advance(void)
 				fail_with(notice);
 				return;
 			}
+			resume_due = 1;   /* a new chapter: keep the resume current */
 			continue;
 		case GS_EV_GALLERY:
 			if (start_gallery()) {
@@ -2503,6 +2587,7 @@ static void advance(void)
 				return;
 			}
 			record_story_end();
+			resume_forget();   /* nothing left to continue */
 			waiting = PLAY_END;
 			return;
 		case GS_EV_ERROR: {
@@ -3509,6 +3594,8 @@ static void draw_glossary(void)
 static void draw_slot_list(void);
 static void draw_quit_confirm(void);
 
+static char continue_here_label[64], continue_server_label[64];
+
 static const char *title_item_label(int item)
 {
 	switch (item) {
@@ -3519,6 +3606,10 @@ static const char *title_item_label(int item)
 	case TITLE_ENDINGS: return config.labels[LABEL_ENDINGS];
 	case TITLE_GUIDE: return config.labels[LABEL_GUIDE];
 	case TITLE_SYNC: return config.labels[LABEL_SYNC];
+	case TITLE_CONTINUE: return "Continue";
+	case TITLE_WAIT: return "Checking the server...";
+	case TITLE_HERE: return continue_here_label;
+	case TITLE_SERVER: return continue_server_label;
 	default: return "";
 	}
 }
@@ -4445,10 +4536,16 @@ typedef struct {
 static int sync_step, sync_cursor, sync_work, sync_wait;
 static char sync_address[64], sync_user[48], sync_password[64], sync_folder[64] = "/3dvn";
 static char sync_message[220];
-static SyncItem sync_items[SAVE_SLOTS];
+static SyncItem sync_items[SAVE_SLOTS + 1];   /* the slots and the resume */
 static int sync_item_count, sync_differ;
 static const char *const sync_keys[SYNC_KEYS] = {"1", "2", "3", "Delete", "4", "5", "6", ".", "7", "8", "9", ":",
 	"Back", "0", "Connect"};
+
+static int sync_configured(void)
+{
+	sync_load_config();
+	return autosync_enabled && sync_address[0] != '\0';
+}
 
 static void sync_config_path(char *path, size_t size)
 {
@@ -4498,6 +4595,7 @@ static void sync_free_items(void)
 
 static void sync_open(void)
 {
+	resume_checkpoint(0);   /* so the sync has where the player is now */
 	autosync_finish();   /* never two syncs at once */
 	sync_free_items();
 	sync_load_config();
@@ -4699,7 +4797,8 @@ static void sync_remote_path(char *path, size_t size, const char *folder, const 
 
 static void slot_file_name(int slot, char *name, size_t size)
 {
-	snprintf(name, size, "%s_%d" SAVE_EXT, game_name, slot + 1);
+	if (slot == RESUME_SLOT) snprintf(name, size, "%s_resume" SAVE_EXT, game_name);
+	else snprintf(name, size, "%s_%d" SAVE_EXT, game_name, slot + 1);
 }
 
 /* Whether "NAME\n" is one of the lines of a listing. */
@@ -4732,7 +4831,7 @@ static void sync_scan(void)
 		return;
 	}
 	sync_differ = 0;
-	for (int slot = 0; slot < SAVE_SLOTS; ++slot) {
+	for (int slot = RESUME_SLOT; slot < SAVE_SLOTS; ++slot) {
 		char name[160], local_path[200], remote_path[260], wanted[170];
 		slot_file_name(slot, name, sizeof(name));
 		save_path(slot, local_path, sizeof(local_path));
@@ -5043,7 +5142,8 @@ static void draw_sync_top(void)
 		int row = 0;
 		for (int i = 0; i < sync_item_count && row < 9; ++i, ++row) {
 			char cells[4][32];
-			snprintf(cells[0], sizeof(cells[0]), "%d", sync_items[i].slot + 1);
+			if (sync_items[i].slot == RESUME_SLOT) snprintf(cells[0], sizeof(cells[0]), "Res.");
+			else snprintf(cells[0], sizeof(cells[0]), "%d", sync_items[i].slot + 1);
 			format_time(sync_items[i].local_time, cells[1], sizeof(cells[1]));
 			format_time(sync_items[i].remote_time, cells[2], sizeof(cells[2]));
 			snprintf(cells[3], sizeof(cells[3]), "%s", sync_status_text(sync_items[i].status));
@@ -5098,6 +5198,7 @@ typedef struct {
 	char address[64], user[48], password[64], folder[64];
 	struct { int slot; long long expected; unsigned char *data; size_t size; } pulls[SAVE_SLOTS];
 	int pull_count, pushed;
+	int resume_written;          /* the resume was just written here: upload it */
 	char *globals;               /* merged endings / unlocks, or NULL */
 	unsigned char *reads;        /* merged read lines, or NULL */
 	size_t reads_size;
@@ -5140,9 +5241,10 @@ static void autosync_worker(void *arg)
 	static char listing[16384];
 	snprintf(path, sizeof(path), "%s/saves", job->folder);
 	if (ftp_list(&ftp, path, listing, sizeof(listing)) < 0) listing[0] = '\0';
-	for (int slot = 0; slot < SAVE_SLOTS; ++slot) {
+	for (int slot = RESUME_SLOT; slot < SAVE_SLOTS; ++slot) {
 		char name[160], local_path[300], wanted[170];
-		snprintf(name, sizeof(name), "%s_%d" SAVE_EXT, job->game, slot + 1);
+		if (slot == RESUME_SLOT) snprintf(name, sizeof(name), "%s_resume" SAVE_EXT, job->game);
+		else snprintf(name, sizeof(name), "%s_%d" SAVE_EXT, job->game, slot + 1);
 		snprintf(local_path, sizeof(local_path), SAVES_DIR "/%s", name);
 		snprintf(wanted, sizeof(wanted), "%s\n", name);
 		size_t local_size = 0, remote_size = 0;
@@ -5150,6 +5252,19 @@ static void autosync_worker(void *arg)
 		snprintf(path, sizeof(path), "%s/saves/%s", job->folder, name);
 		if (in_listing(listing, wanted) && ftp_get(&ftp, path, &remote, &remote_size) != 0) remote = NULL;
 		long long here = save_data_time(local, local_size), there = save_data_time(remote, remote_size);
+		if (slot == RESUME_SLOT) {
+			/* uploaded when just written here (where the player really was last, whatever the
+			   clocks say) or newer; never downloaded by itself: Continue asks */
+			if (local != NULL && here > 0 && (remote == NULL || job->resume_written || here > there)
+				&& !(remote != NULL && remote_size == local_size && !memcmp(remote, local, local_size))) {
+				unsigned char *data = portable_save(local, local_size);
+				if (data != NULL && ftp_put(&ftp, path, data, local_size) == 0) job->pushed++;
+				free(data);
+			}
+			free(local);
+			free(remote);
+			continue;
+		}
 		if (local != NULL && here > 0 && (remote == NULL || here > there)) {
 			unsigned char *data = portable_save(local, local_size);
 			if (data != NULL && ftp_put(&ftp, path, data, local_size) == 0) job->pushed++;
@@ -5198,6 +5313,150 @@ static void autosync_worker(void *arg)
 	__atomic_store_n(&autosync_finished, 1, __ATOMIC_RELEASE);
 }
 
+/* ---- Continue: the resume here, or a newer one from the server ----
+   With auto sync on, Continue first fetches the server's resume (one request, in the
+   background). If it differs from the one here, the player picks which to continue from:
+   the times are shown rather than the newest taken, as console clocks are often off. */
+typedef struct {
+	char game[128], address[64], user[48], password[64], folder[64];
+	unsigned char *remote;
+	size_t remote_size;
+} ResumeCheck;
+
+static ResumeCheck *resume_check;
+static Thread resume_thread;
+static volatile int resume_check_done;
+static unsigned char *continue_remote;   /* the server's resume, while the player chooses */
+static size_t continue_remote_size;
+
+static void resume_check_worker(void *arg)
+{
+	ResumeCheck *job = arg;
+	char host[64], path[300];
+	int port = 2121;
+	snprintf(host, sizeof(host), "%s", job->address);
+	char *colon = strchr(host, ':');
+	if (colon != NULL) {
+		*colon = '\0';
+		port = atoi(colon + 1);
+	}
+	FtpConn ftp;
+	if (ftp_net_init() == 0) {
+		if (ftp_connect(&ftp, host, port, job->user, job->password) == 0) {
+			snprintf(path, sizeof(path), "%s/saves/%s_resume" SAVE_EXT, job->folder, job->game);
+			if (ftp_get(&ftp, path, &job->remote, &job->remote_size) != 0) job->remote = NULL;
+			ftp_close(&ftp);
+		}
+		ftp_net_exit();
+	}
+	__atomic_store_n(&resume_check_done, 1, __ATOMIC_RELEASE);
+}
+
+static void continue_local(void)
+{
+	free(continue_remote);
+	continue_remote = NULL;
+	if (resume_exists() && load_slot(RESUME_SLOT)) {
+		mode = MODE_PLAY;
+		return;
+	}
+	snprintf(notice, sizeof(notice), resume_exists() ? "Could not continue" : "Nothing to continue yet");
+	build_title_items();
+}
+
+static void continue_server(void)
+{
+	char path[200];
+	save_path(RESUME_SLOT, path, sizeof(path));
+	unsigned char *data = continue_remote ? portable_save(continue_remote, continue_remote_size) : NULL;
+	if (data == NULL || write_local(path, data, continue_remote_size) != 0) {
+		snprintf(notice, sizeof(notice), "Could not use the server's resume");
+	}
+	free(data);
+	continue_local();
+}
+
+static void continue_start(void)
+{
+	if (!sync_configured() || resume_check != NULL) {
+		continue_local();
+		return;
+	}
+	ResumeCheck *job = calloc(1, sizeof(*job));
+	if (job == NULL) {
+		continue_local();
+		return;
+	}
+	snprintf(job->game, sizeof(job->game), "%s", game_name);
+	snprintf(job->address, sizeof(job->address), "%s", sync_address);
+	snprintf(job->user, sizeof(job->user), "%s", sync_user);
+	snprintf(job->password, sizeof(job->password), "%s", sync_password);
+	snprintf(job->folder, sizeof(job->folder), "%s", sync_folder);
+	resume_check_done = 0;
+#ifdef __3DS__
+	resume_thread = threadCreate(resume_check_worker, job, 32 * 1024, 0x31, -2, false);
+#else
+	resume_thread = threadCreate(resume_check_worker, job, 32 * 1024, 0, 0, false);
+#endif
+	if (resume_thread == NULL) {
+		free(job);
+		continue_local();
+		return;
+	}
+	resume_check = job;
+	title_count = 1;
+	title_items[0] = TITLE_WAIT;
+	title_cursor = 0;
+}
+
+/* Each frame: when the server's answer is in, continue or ask. */
+static void continue_poll(void)
+{
+	if (resume_check == NULL || !__atomic_load_n(&resume_check_done, __ATOMIC_ACQUIRE)) return;
+	threadJoin(resume_thread, UINT64_MAX);
+	threadFree(resume_thread);
+	resume_thread = NULL;
+	ResumeCheck *job = resume_check;
+	resume_check = NULL;
+	int waiting_here = mode == MODE_TITLE && title_items[0] == TITLE_WAIT;
+	if (!waiting_here) {   /* the player went back meanwhile */
+		free(job->remote);
+		free(job);
+		return;
+	}
+	char path[200];
+	save_path(RESUME_SLOT, path, sizeof(path));
+	size_t local_size = 0;
+	unsigned char *local = read_local(path, &local_size);
+	long long here = save_data_time(local, local_size);
+	long long there = save_data_time(job->remote, job->remote_size);
+	if (job->remote == NULL || there == 0) {            /* none there (or no server) */
+		free(job->remote);
+		continue_local();
+	} else if (local == NULL || here == 0) {            /* only there: take it */
+		continue_remote = job->remote;
+		continue_remote_size = job->remote_size;
+		continue_server();
+	} else if (here == there || (local_size == job->remote_size && !memcmp(local, job->remote, local_size))) {
+		free(job->remote);
+		continue_local();
+	} else {                                            /* both, different: ask */
+		char when[32];
+		format_time(here, when, sizeof(when));
+		snprintf(continue_here_label, sizeof(continue_here_label), "Continue here (%s)", when);
+		format_time(there, when, sizeof(when));
+		snprintf(continue_server_label, sizeof(continue_server_label), "Continue from server (%s)", when);
+		continue_remote = job->remote;
+		continue_remote_size = job->remote_size;
+		title_count = 0;
+		title_items[title_count++] = there > here ? TITLE_SERVER : TITLE_HERE;
+		title_items[title_count++] = there > here ? TITLE_HERE : TITLE_SERVER;
+		title_cursor = 0;
+	}
+	free(local);
+	free(job);
+}
+
 /* Starts a background sync of the current game (or queues one if one is running). */
 static void autosync_request(void)
 {
@@ -5215,6 +5474,8 @@ static void autosync_request(void)
 	snprintf(job->user, sizeof(job->user), "%s", sync_user);
 	snprintf(job->password, sizeof(job->password), "%s", sync_password);
 	snprintf(job->folder, sizeof(job->folder), "%s", sync_folder);
+	job->resume_written = autosync_resume_written;
+	autosync_resume_written = 0;
 	read_save();   /* the worker reads the files: put the latest read lines there */
 	autosync_job = job;
 	autosync_finished = 0;
@@ -5497,6 +5758,7 @@ static void autosync_poll(void);
 
 static void leave_game(void)
 {
+	resume_checkpoint(1);
 	autosync_finish();
 	read_save();
 	playtime_save();
@@ -5588,6 +5850,15 @@ static void choose_menu_item(int index)
 static void choose_title_item(void)
 {
 	switch (title_items[title_cursor]) {
+	case TITLE_CONTINUE:
+		continue_start();
+		break;
+	case TITLE_HERE:
+		continue_local();
+		break;
+	case TITLE_SERVER:
+		continue_server();
+		break;
 	case TITLE_START:
 		begin_game();
 		break;
@@ -5617,6 +5888,10 @@ static int hit_button(const Button *buttons, int count, const touchPosition *tou
 static void handle_title_input(u32 down, u32 repeat)
 {
 	if (down & KEY_B) {
+		if (title_items[0] == TITLE_WAIT || title_items[0] == TITLE_HERE) {
+			build_title_items();   /* back from Continue's question */
+			return;
+		}
 		leave_game();
 		return;
 	}
@@ -6127,6 +6402,13 @@ int main(int argc, char **argv)
 	mkdir(ROOT_DIR, 0777);
 	mkdir(GAMES_DIR, 0777);
 	scan_games();
+#ifdef __3DS__
+	static aptHookCookie apt_cookie;
+	aptHook(&apt_cookie, apt_hook, NULL);
+#endif
+#ifdef VN_SDL
+	vn_background_hook = background_hook;
+#endif
 
 	char last_notice[sizeof(notice)] = "";
 	float notice_age = 0.0f;
@@ -6175,6 +6457,7 @@ int main(int argc, char **argv)
 
 		if (quit_app) break;
 		autosync_poll();
+		continue_poll();
 		audio_update(dt);
 		if (down || hidKeysHeld()) last_activity = now;
 		if (mode == MODE_PLAY && panel == PANEL_NONE && !extras_mode && now - last_activity < IDLE_LIMIT_MS
@@ -6250,6 +6533,9 @@ int main(int argc, char **argv)
 			if (panel == PANEL_NONE && waiting == PLAY_NONE) {
 				advance();
 			}
+			if (resume_due && panel == PANEL_NONE && (waiting == PLAY_TEXT || waiting == PLAY_MENU)) {
+				resume_checkpoint(1);
+			}
 			if (mode == MODE_PLAY) {
 				if (panel != PANEL_NONE) {
 					handle_panel_input(down, repeat);
@@ -6323,6 +6609,7 @@ int main(int argc, char **argv)
 	}
 
 	stop_video();
+	resume_checkpoint(1);   /* closing the app: remember where the player is */
 	autosync_finish();
 	playtime_save();   /* the app is closing (START / exit menu): keep the last minutes */
 	read_save();

@@ -813,6 +813,7 @@ class Converter:
                 fh.write("\n".join(fixed) + "\n")
         if self.a.speakers:
             with open(os.path.join(self.out, "characters.3vs"), "w", encoding="utf-8") as fh:
+                fh.write("# speakers found with --speakers\n")   # never empty (older 3DVN builds)
                 for cid, name in sorted(self.chars.items()):
                     fh.write(f"character {cid} {quote(name)}\n")
         head = [f"# {self.a.title} - converted from VNDS by import_vnds.py", 'set _vnds_entry = ""',

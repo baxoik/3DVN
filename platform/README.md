@@ -109,6 +109,22 @@ newest of each (only then; nothing is sent otherwise): no waiting, a short notic
 saves were downloaded or uploaded, or once when the server can't be reached. A download only
 replaces a slot that wasn't saved over meanwhile; endings and read lines are merged.
 
+## Continue (resume where you left off)
+
+Besides the 15 slots, each game keeps `saves/<game>_resume.3vsav`: where you left off. It is
+written on every way of leaving a game (back to the title or the game list, closing the
+app, HOME and sleep on the 3DS, HOME on the Wii U, before a sync) and when a new chapter
+begins, in case the power goes; only while a line or a choice is on screen, otherwise the
+previous one stays. The end of the story removes it. The title offers it as **Continue**.
+The same file is used by the 3DS, Wii U and PC versions and the Android reader.
+
+With auto sync on, a resume written on leaving is uploaded (it is where you really were
+last, whatever the clocks say), and **Continue** first asks the server for its resume
+(one request): if it is the same, or there is none, you continue here; if there is only
+the server's, you continue from it; if they differ, you pick, "Continue from server
+(time)" or "Continue here (time)" (console clocks are often off, so the newer one is not
+just taken). Auto sync never replaces the resume by itself. Sync Saves lists it as "Res.".
+
 ## Sharing saves between 3DS and Wii U
 
 Save files are the same on both: every 3DVN build from 2026-11-22 on writes them in one

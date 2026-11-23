@@ -131,6 +131,11 @@ In the backlog:      D-pad up/down scroll one entry, left/right jump five
                      entries (hold to repeat); B or L closes.
 In Save / Load:      D-pad up/down + A; B goes back. The list
                      scrolls (8 rows visible, 15 slots).
+Continue (title):    where you left off: saves/<game>_resume.3vsav, written
+                     whenever you leave a game (title, game list, closing the
+                     app, HOME, sleep) and when a chapter begins; removed at the
+                     end of the story. With auto sync on it is shared through
+                     the server (see platform/README.md).
 In the quit prompt:  A quits, B returns to the game.
 
 During a video: A or a tap on the screen skips it (unless the script says

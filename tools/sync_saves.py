@@ -12,7 +12,7 @@ A and B are 3DVN root folders, each one of:
   python3 tools/sync_saves.py 3ds:192.168.0.30 wiiu:192.168.0.25
 
 What it syncs, per game:
-  saves/<game>_<slot>.3vsav   each slot both ways: the newer one (by the time it was
+  saves/<game>_<slot>.3vsav   each slot (and <game>_resume.3vsav) both ways: the newer one (by the time it was
                               saved, stored in the file) replaces the older one
   saves/<game>.3vglobal       endings seen and other unlocks: merged (highest value of
                               each flag), so progress on either side counts on both
@@ -28,7 +28,7 @@ them). Game names must match on both sides (the archive or folder name in games/
 import argparse, ctypes, datetime, ftplib, io, os, re, struct, sys
 
 SAVE_MAGIC = 0x32564433
-SAVE_NAME = re.compile(r"^(?P<game>.+)_(?P<slot>\d+)\.3vsav$")
+SAVE_NAME = re.compile(r"^(?P<game>.+)_(?P<slot>\d+|resume)\.3vsav$")   # resume: where you left off
 
 
 # ---------------------------------------------------------------- sides
