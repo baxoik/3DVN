@@ -167,8 +167,10 @@ class ImportHigurashiTests(unittest.TestCase):
         self.assertIn("bg background/gk1", nvl)
         self.assertIn("sfx voice/ps3/s19/03/990300034", nvl)
         self.assertIn("show L3 sprite/me1a_def_a1_0 at 75 8 fade 0.30", nvl)   # 16:9 canvas
-        self.assertIn('"\\"We made it!\\""', nvl)
-        self.assertNotIn("Mion", nvl)                                          # NVL: no names
+        self.assertIn('c_mion: "\\"We made it!\\""', nvl)    # the name, for ADV display
+        config = (out / "game.3vc").read_text()
+        self.assertIn("default_display nvl", config)
+        self.assertIn("nvl_names 0", config)                                   # not on NVL pages
         self.assertNotIn("Censored", nvl)                                      # level 2
         self.assertIn("hide L3", nvl)
         self.assertTrue((out / "characters.3vs").read_text().strip())          # never empty
@@ -180,7 +182,7 @@ class ImportHigurashiTests(unittest.TestCase):
         out, adv = convert("--adv", "--censor", "4")
         self.assertIn('c_mion: "\\"We made it!\\""', adv)
         self.assertIn('character c_mion "Mion" #5ec69a', (out / "characters.3vs").read_text())
-        self.assertIn('"Censored text."', adv)                                 # inlined section
+        self.assertIn('Censored text."', adv)                                   # inlined section
         self.assertIn("default_display adv", (out / "game.3vc").read_text())
 
     def test_choices_and_story_flags(self):

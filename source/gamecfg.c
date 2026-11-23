@@ -37,6 +37,7 @@ static const NumberKey number_keys[NUM_COUNT] = {
 	{"advance_scale", 100, 10, 400},
 	{"nvl_accumulate", 0, 0, 1},
 	{"face_box", 0, 0, 1},
+	{"nvl_names", 1, 0, 1},
 };
 
 void config_defaults(GameConfig *config)

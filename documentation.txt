@@ -602,6 +602,10 @@ Dialogue box (pixels on the 400x240 top screen; defaults in brackets)
     nvl_margin_x [12]      Left/right text inset, 0-180 pixels
     nvl_margin_y [12]      Top narration inset, 0-90 pixels
     nvl_accumulate [0]     Retain dialogue until `page`: 1 yes, 0 no
+    nvl_names [1]          Put "Name: " before named lines on an accumulating NVL
+                           page: 1 yes, 0 no (names then show only in ADV, so a
+                           game can be played either way with the Display style
+                           option)
     advance_frames [1]     Number of equal-width horizontal animation frames, 1-128
     advance_frame_ms [100] Time per frame in milliseconds, 1-10000
     advance_scale [100]    Indicator size as a percentage, 10-400

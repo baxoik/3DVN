@@ -29,7 +29,7 @@ It works with two kinds of game folder and finds out which it has:
 | --- | --- |
 | `--backgrounds ps3\|original` | `ps3` (default): 07th-Mod's high-resolution PS3 backgrounds; `original`: the 640x480 originals. The Steam release only has the originals. |
 | `--sprites ps3\|mangagamer\|ryukishi` | `mangagamer`: MangaGamer's remade sprites (the Steam game's alternative art); `ryukishi`: the Ryukishi07-style sprites (the Steam game's default); `ps3`: 07th-Mod's PS3 sprites. Default: the game's own default (`ryukishi` on Steam, `ps3` with 07th-Mod). With 07th-Mod all three come at high resolution. |
-| `--adv` | 07th-Mod: one line at a time in a text box with the speaker's name (in their colour), instead of full pages. |
+| `--adv` | Start in ADV (a text box with the speaker's name) instead of full pages. Either can be chosen while playing: Options > Display style. |
 | `--audio mangagamer\|gin\|houplus` | 07th-Mod music and sound set (default `mangagamer`). |
 | `--censor N` | 07th-Mod censorship level 0-5 (default 2, the mod's default). |
 | `--no-movies` | Leave out the opening movie (07th-Mod). |
@@ -44,6 +44,22 @@ Example, high-resolution backgrounds with MangaGamer's sprites:
 
 Where a chosen set lacks a sprite (07th-Mod's MangaGamer set has no close-up
 portraits), the PS3 one is used and the converter says how often.
+
+## Full pages or ADV
+
+A converted game can be read both ways, switched in the game's Options >
+Display style: NVL, full pages of text as in the original, or ADV, a text box
+at the bottom with the speaker's name (in their colour; the names come from
+07th-Mod, the Steam release has none). In ADV a line the game builds from
+several parts is shown whole under its speaker's name. The game starts in NVL,
+or ADV with `--adv`.
+
+## Sizes
+
+Onikakushi: about 105 MB from the Steam release; about 470 MB with 07th-Mod
+(voices 210 MB, music 50 MB, high-resolution art for PC, Wii U and Android
+180 MB, the movie 18 MB). `--no-hd` leaves out the high-resolution art (about
+290 MB then, and the 3DS never uses it); `--no-movies` the movie.
 
 ## What is converted
 

@@ -307,7 +307,9 @@ class Converter:
         self.movies = {}
         self.chars = {}       # character id -> (name, colour)
         # settings the scripts test (07th-Mod), decided at conversion time
-        self.flags = {"GADVMode": 1 if a.adv else 0, "GCensor": a.censor, "GHideCG": 0,
+        # The text is laid out as NVL pages; the ADV branches only add speaker names, so the
+        # game can be played either way (Options > Display style). --adv sets the start.
+        self.flags = {"GADVMode": 0, "GCensor": a.censor, "GHideCG": 0,
                       "GLipSync": 0, "GArtStyle": 0, "GVideoOpening": 1 if a.no_movies else 2,
                       "GChoiceMode": 0, "GLanguage": 1}   # no console-only choices, as the original
         wide = re.search(r'SetScreenAspect\(\s*"0\.5625"', init) is not None
@@ -421,13 +423,24 @@ class Converter:
         text = text.replace("TRUE", "1").replace("FALSE", "0")
         return re.sub(r"\s+", " ", text).strip()
 
+    def names_from(self, stmts):
+        """07th-Mod's ADV branch "OutputLine(name, NULL, name, NULL, ...)" -> the speaker"""
+        for st in stmts:
+            if st[0] == "call" and st[1] == "OutputLine" and len(st[2]) > 3:
+                name, text = st[2][2], st[2][3]
+                if isinstance(name, str) and name not in ("NULL", "") and text in ("NULL", "", None):
+                    self.speaker = self.character(name)
+
     def run_block(self, stmts, out, where, depth=0, file=None):
         file = file or where.split(":")[0]
         for st in stmts:
             if st[0] == "if":
                 expr = self.runtime(st[1])
                 if expr is None:   # a setting: decided now
-                    self.run_block(st[2] if self.condition(st[1], where) else st[3], out, where, depth, file)
+                    taken = self.condition(st[1], where)
+                    if not taken and "GADVMode" in " ".join(st[1]):
+                        self.names_from(st[2])   # keep the ADV speaker name for the next line
+                    self.run_block(st[2] if taken else st[3], out, where, depth, file)
                 else:              # story state (a choice, a flag): decided while playing
                     self.flush(out)
                     out.append(f"if {expr}")
@@ -484,17 +497,14 @@ class Converter:
         if not text.strip():
             return   # only line breaks so far: keep them for the next text
         self.text = ""
-        if self.a.adv:   # one line at a time, with the speaker's name
-            text = text.strip("\n")
-            speaker, self.speaker = self.speaker, None
-            out.append(f"{speaker}: {quote(text)}" if speaker else quote(text))
-            return
+        speaker, self.speaker = self.speaker, None
         if self.page and self.page + len(text) > PAGE_CHARS:
             out.append("page")
             self.page = 0
             text = text.lstrip("\n")
         self.page += len(text)
-        out.append(quote(text))
+        # the name shows in ADV only (nvl_names 0); NVL pages look as in the original
+        out.append(f"{speaker}: {quote(text)}" if speaker else quote(text))
 
     def movie(self, name):
         """movies/<name>.mp4 (or .ogv) -> video/<name>.3vv + .wav, made with mk3vv.py"""
@@ -550,7 +560,7 @@ class Converter:
         elif cmd == "ClearMessage":
             self.flush(out)
             self.text = ""   # line breaks left at the end of a page are not needed
-            if self.page and not self.a.adv:
+            if self.page:
                 out.append("page")
                 self.page = 0
         elif cmd == "FadeBG":   # fade the background out
@@ -810,7 +820,8 @@ class Converter:
                      'set _hig_step = ""\nscript ch/flow\n')
         with open(os.path.join(self.out, "game.3vc"), "w", encoding="utf-8") as fh:
             fh.write(f"title {title}\nmenu_title {title}\n"
-                     + ("default_display adv\n" if self.a.adv else "default_display nvl\nnvl_accumulate 1\n"))
+                     f"default_display {'adv' if self.a.adv else 'nvl'}\n"
+                     "nvl_accumulate 1\nnvl_names 0\n")
         self.convert_pictures()
         self.copy_audio()
         return steps, tips
@@ -897,7 +908,8 @@ def main():
     ap.add_argument("--audio", choices=sorted(AUDIO_SETS), default="mangagamer",
                     help="07th-Mod music/sound set (default mangagamer)")
     ap.add_argument("--adv", action="store_true",
-                    help="07th-Mod: one line at a time with speaker names, instead of full pages")
+                    help="start in ADV (one line at a time in a text box, with names) instead of "
+                         "full pages; either can be chosen while playing (Options > Display style)")
     ap.add_argument("--censor", type=int, default=2, help="07th-Mod censorship level 0-5 (default 2)")
     ap.add_argument("--title", default=None)
     ap.add_argument("--no-tips", action="store_true", help="leave out the TIPS")

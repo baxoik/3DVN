@@ -157,6 +157,9 @@ static int say_held;
 static Scene scene;
 static GsBgLoop bgloop;
 static NvlPage nvl_page;
+/* speaker of the current paragraph of an accumulating game (for its ADV display) */
+static char paragraph_speaker[GS_NAME_LEN];
+static u32 paragraph_color;
 static Picture *loop_pictures[3];
 static Mode mode = MODE_SELECT;
 static Wait waiting = PLAY_NONE;
@@ -2458,8 +2461,15 @@ static void advance(void)
 			continue;
 		case GS_EV_SAY:
 			if (config.num[NUM_NVL_ACCUMULATE]) {
+				/* a line built from several pieces keeps the name of its first piece (ADV) */
+				if (event.text[0] == '\n' || nvl_page.length == 0 || event.speaker[0]) {
+					snprintf(paragraph_speaker, sizeof(paragraph_speaker), "%s", event.speaker);
+					paragraph_color = event.color;
+				}
 				char prefix[GS_NAME_LEN + 3] = "";
-				if (event.speaker[0]) snprintf(prefix, sizeof(prefix), "%s: ", event.speaker);
+				/* names on the page, unless the game shows them only in ADV (nvl_names 0) */
+				if (event.speaker[0] && config.num[NUM_NVL_NAMES])
+					snprintf(prefix, sizeof(prefix), "%s: ", event.speaker);
 				NvlPageResult result = nvl_page_append_dialogue(&nvl_page, prefix, strlen(prefix),
 					event.text, strlen(event.text));
 				if (result == NVL_PAGE_TRIMMED) {
@@ -2987,6 +2997,18 @@ static u32 shown_box_frame, frame_counter;
 
 /* Auto mode: a small play mark inside the text box's top right corner (the screen's top
    right when no box is shown), gently pulsing. */
+/* ADV display of an accumulating (NVL) game: the earlier pieces of the current paragraph,
+   from the page, so a line spoken in several parts is shown whole (and under its name). */
+static size_t paragraph_before(const char **start)
+{
+	size_t end = nvl_page.current_event_offset;
+	if (end > nvl_page.length || event.text[0] == '\n') return 0;
+	size_t begin = end;
+	while (begin > 0 && nvl_page.text[begin - 1] != '\n') --begin;
+	*start = nvl_page.text + begin;
+	return end - begin;
+}
+
 static void draw_auto_indicator(void)
 {
 	float x = TOP_W - 16.0f, y = 6.0f;
@@ -3019,7 +3041,16 @@ static void draw_textbox(void)
 	shown_box_w = bw;
 	shown_box_frame = frame_counter;
 	int accumulating = display_options.nvl && config.num[NUM_NVL_ACCUMULATE];
-	int named = !accumulating && event.speaker[0] != '\0';
+	int paragraphs = !display_options.nvl && config.num[NUM_NVL_ACCUMULATE];
+	const char *before = NULL;
+	size_t before_length = paragraphs ? paragraph_before(&before) : 0;
+	const char *speaker = event.speaker;
+	u32 speaker_color_value = event.color;
+	if (paragraphs && !speaker[0] && before_length > 0) {   /* a later piece of a line */
+		speaker = paragraph_speaker;
+		speaker_color_value = paragraph_color;
+	}
+	int named = !accumulating && speaker[0] != '\0';
 	Picture *textbox = custom ? ui_image(display_options.nvl && custom_nvl_available
 		? IMG_NVL_TEXTBOX : IMG_TEXTBOX) : NULL;
 	u32 fill = custom && config.has_panel ? rgb_color(config.panel, (u8)n[NUM_TEXTBOX_ALPHA])
@@ -3068,11 +3099,11 @@ static void draw_textbox(void)
 			C2D_DrawImageAt(plate->image, bx + (float)n[NUM_NAMEBOX_X], by + (float)n[NUM_NAMEBOX_Y],
 				Z_BOX + 0.02f, NULL, 1.0f, 1.0f);
 		}
-		draw_line(event.speaker, bx + (display_options.nvl ? (float)n[NUM_NVL_MARGIN_X]
+		draw_line(speaker, bx + (display_options.nvl ? (float)n[NUM_NVL_MARGIN_X]
 			: fmaxf((float)n[NUM_NAME_X], face_inset)),
 			by + (display_options.nvl ? (float)n[NUM_NVL_MARGIN_Y] - 2.0f : (float)n[NUM_NAME_Y]),
 			(float)n[NUM_NAME_SIZE] / 100.0f,
-			event.color != 0 || custom ? speaker_color(event.color) : COLOR_ACCENT, Z_TEXT, 0.0f);
+			speaker_color_value != 0 || custom ? speaker_color(speaker_color_value) : COLOR_ACCENT, Z_TEXT, 0.0f);
 	}
 	float text_x = display_options.nvl ? (float)n[NUM_NVL_MARGIN_X] : (float)n[NUM_TEXT_X];
 	float right_margin = text_x;
@@ -3086,23 +3117,37 @@ static void draw_textbox(void)
 		draw_nvl_page(bx + text_x, by + text_y, width, bh - text_y - n[NUM_NVL_MARGIN_Y], scale, color);
 		return;
 	}
-	char shown[GS_TEXT_LEN + 64];
+	char shown[2 * GS_TEXT_LEN + 64];
 	size_t length = utf8_prefix(event.text, (size_t)chars_shown);
 	const char *full = event.text;
 	size_t visible = length;
+	float skipped = 0.0f;
 	if (config.num[NUM_NVL_ACCUMULATE] && !display_options.nvl) {
 		while (*full == '\n' || *full == '\r') {
 			++full;
+			skipped += 1.0f;
 			if (visible > 0) --visible;
 		}
 	}
+	char whole[2 * GS_TEXT_LEN];
+	if (before_length > 0) {   /* earlier pieces (shown) + this one (typing) */
+		if (before_length > GS_TEXT_LEN) {   /* keep the end of a very long paragraph */
+			before += before_length - GS_TEXT_LEN;
+			before_length = GS_TEXT_LEN;
+		}
+		snprintf(whole, sizeof(whole), "%.*s%s", (int)before_length, before, full);
+		for (size_t i = 0; i < before_length; ++i)   /* the reveal counts characters */
+			if (((unsigned char)before[i] & 0xC0) != 0x80) skipped -= 1.0f;
+		visible += before_length;
+		full = whole;
+	}
 	if (!display_options.nvl) {
-		scale = fit_text_scale(event.text, width, bh - text_y - 4.0f, scale);
+		scale = fit_text_scale(full, width, bh - text_y - 4.0f, scale);
 	}
 #ifdef VN_SDL
 	/* lay out the whole line once; draw_text_reveal shows the typed part smoothly */
 	reveal_with_breaks(full, strlen(full), width, scale, shown, sizeof(shown));
-	float reveal = chars_shown - (float)(full - event.text);
+	float reveal = chars_shown - skipped;
 	(void)visible;
 #else
 	reveal_with_breaks(full, visible, width, scale, shown, sizeof(shown));
