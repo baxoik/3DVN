@@ -543,7 +543,6 @@ static void record_story_end(void)
 	if (dot != NULL && dot > name + 6) *dot = '\0';
 	gs_variable_set_number(&state, name, 1);
 	globals_sync();
-	autosync_request();
 }
 
 /* ---- Guide: games/<game>.txt, read on the bottom screen ---- */
@@ -2110,7 +2109,6 @@ static void start_game(const char *name)
 	last_activity = now_ms();
 	endings_load();
 	guide_find();
-	autosync_request();   /* newer saves from the server, if auto sync is on */
 	gs_state_init(program, &state);
 	memset(&backlog, 0, sizeof(backlog));
 	memset(log_layout, 0, sizeof(log_layout));
@@ -5016,7 +5014,8 @@ static void draw_sync_bottom(void)
 
 /* ---- Auto sync: in the background while playing ----
    With a server set up and "Auto sync" on (settings/sync.cfg "auto 1"), the game's saves
-   are synced newest-of-each when the game opens and after every save, on a worker thread.
+   are synced newest-of-each when the player saves (only then: no other network traffic), on
+   a worker thread; endings / read lines go along with it.
    The worker does only network work and works out what changes; the main thread then writes
    the downloaded saves (only into slots not saved over in the meantime) and merges the
    endings / read lines with what the game holds right now (autosync_poll). */

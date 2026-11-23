@@ -85,8 +85,8 @@ stored in the shared 3DS / Wii U format (older Wii U saves are converted), and e
 replaced file is kept once as `.bak`, on the console and on the server.
 
 **Auto sync while playing:** the same screen's last entry turns it on (stored as `auto 1` in
-`settings/sync.cfg`). Then the game's saves sync in the background, newest of each, when the
-game opens and after every save (and when a story ends): no waiting, a short notice when
+`settings/sync.cfg`). Then each time you save, the game's saves sync in the background,
+newest of each (only then; nothing is sent otherwise): no waiting, a short notice when
 saves were downloaded or uploaded, or once when the server can't be reached. A download only
 replaces a slot that wasn't saved over meanwhile; endings and read lines are merged.
 
