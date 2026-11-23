@@ -151,32 +151,33 @@ VNDS player skips too.
   version of 3DVN or later on every device: their saves carry the extra
   variables in an added block that older builds don't read.
 
-## Never 7 with the "end of infinity" assets
+## Never 7 from "the end of infinity" (n7e.love)
 
-`import_never7.py` converts Never 7 with the VNDS release's script but the pictures,
-voices, music, movies and Append Story of "Never 7 - the end of infinity" for LÖVE
-(`n7e.love`), read straight from the .love file:
+For Never 7, `import_never7.py` converts "Never 7 - the end of infinity" for LÖVE
+(`n7e.love`) on its own; the VNDS release is not needed (to convert that one alone, use
+import_vnds.py as for any VNDS game). It reads the .love file in place:
 
-    python3 tools/import_never7.py "<VNDS Never 7 folder>" n7e.love games/never7 \
+    python3 tools/import_never7.py n7e.love games/never7 \
         [--music pc|psp] [--no-movies] [--no-append] [--movie-size 320x240]
 
-- backgrounds and sprites from `upscale/` (twice the VNDS size: scaled for the 3DS screen,
-  full size in `hd/` for PC, Wii U and Android). The tall panning CGs are cut into the
-  VNDS top / `-middle` / `-bottom` pieces; night sprites (`NAMEn`) are tinted as the
-  .love does;
+- the story from `script/*.dec` (the original engine's commands as the port decodes
+  them), translated to VNDS commands and then converted like any VNDS game. Each
+  message is one line, as in the original (the VNDS release splits them);
+- Yuka's eight-part Append Story (`script/append/`), offered on the title menu;
+- backgrounds and sprites from `upscale/` (1600x1200: scaled for the 3DS screen, full
+  size in `hd/` for PC, Wii U and Android). Tall panning CGs are cut into top /
+  `-middle` / `-bottom` pieces; sprites named `...n` / `...d` are the night / dusk
+  tints the port draws;
 - voices and sound effects from `sound/` (WAV, converted to Ogg Vorbis);
 - music from `music/pc/` (default) or `music/psp/`;
 - movies: the opening, the five heroine clips and the eight endings with their songs,
-  placed where the .love's scripts play them (found by the text around them). Their
-  sound is Ogg Vorbis kept as `video/NAME.wav` (the engine reads either format there).
-  About 290 MB; `--no-movies` leaves them out, `--movie-size` limits the picture;
-- the Append Story: Yuka's eight-part story (`script/append/`), translated from the
-  .love's mix of VNDS and original-engine commands. The VNDS title menu's
-  "Append Story" (empty in the VNDS release) starts it.
+  where the scripts play them. Their sound is Ogg Vorbis kept as `video/NAME.wav` (the
+  engine reads either format there). About 290 MB; `--no-movies` leaves them out,
+  `--movie-size` limits the picture.
 
-The few pictures the .love file lacks come from the VNDS release. Any other
-import_vnds.py option can be added at the end. import_vnds.py also accepts a `video NAME`
-line in a script (a 3DVN extension, not VNDS) for `video/NAME.3vv`.
+The title shows the port's title picture, with a heroine added for each route cleared.
+The port's debug menu is left out. import_vnds.py accepts a `video NAME` line in a
+script (a 3DVN extension, not VNDS) for `video/NAME.3vv`.
 
 ## Checking the result
 
