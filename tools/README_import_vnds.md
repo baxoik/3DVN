@@ -21,98 +21,143 @@
 
     python3 import_vnds.py SOURCE OUTPUT [options]
 
-`SOURCE` is the VNDS game folder. It must contain `script/main.scr` and
-normally `background/`, `foreground/` and `sound/`. `info.txt` is used for
-the title if present. `OUTPUT` is the new game folder to create.
+`SOURCE` is the VNDS game folder, as it would be copied to a DS or to the
+VNDS Android app. It needs `script/main.scr` (or a `script.zip` containing
+it) and normally has `background`, `foreground` and `sound`, each either as
+a folder or as a `.zip` (both kinds of game are common; when both exist,
+loose files win). `img.ini` gives the original screen size and `info.txt`
+the title; `icon.png` becomes the game's icon. `OUTPUT` is the new game
+folder to create.
 
 Example:
 
-    python3 tools/import_vnds.py ~/vnds/mygame games/mygame --speakers
+    python3 tools/import_vnds.py ~/vnds/Kanon games/kanon --speakers
 
-Then copy `games/mygame` into the `3dvn/games/` folder on your SD card
-(next to the other games) and pick it from the game list.
+Then copy `games/kanon` into the `3dvn/games/` folder on your SD card (Wii U:
+`sd:/wiiu/apps/3dvn/games/`), or import it in the Android app, and pick it
+from the game list. Running it again over the same OUTPUT only converts what
+is missing.
+
+Tested with Anon's Nice Day, CLANNAD, Ever 17, Kanon, Narcissu 2, Never 7,
+Planetarian, Red Shift, True Remembrance and Tsukihime from the VNDS
+archive.
 
 ## Options
 
 | Option | Meaning |
 | --- | --- |
-| `--source-size WIDTHxHEIGHT` | Set the game's original coordinate canvas explicitly, e.g. `--source-size 1920x1080`. |
-| `--scale S` | Override the automatic uniform scale, e.g. `--scale 1` keeps images at their original size. Sprite positions are adjusted to match. |
-| `--speakers` | Treat lines like `Name: some text` as dialogue spoken by `Name`. Off by default, because ordinary narration that happens to contain a colon would be affected. |
+| `--speakers` | Treat lines like `Name: some text` as dialogue spoken by `Name` (shown as a name tag). Off by default, because narration that happens to contain a colon would be affected. |
+| `--nvl` | Keep text on screen like VNDS does, a page at a time (new page at `cleartext` and when the page is full), instead of one line per text box. |
+| `--source-size WIDTHxHEIGHT` | The game's original screen size, e.g. `--source-size 256x192`. Default: `img.ini`, else the backgrounds' size. |
+| `--scale S` | Override the automatic scale, e.g. `--scale 1` keeps images at their original size. Sprite positions are adjusted to match. |
 | `--title T` | Game title (default: from `info.txt`, else the folder name). |
-| `--no-audio` | Skip audio conversion. |
+| `--keep-main-loop` | See "Endings" below. |
+| `--no-hd` | Don't keep the full-size pictures in `hd/` (smaller, 3DS only). |
+| `--no-audio` | Skip audio. |
+| `--wav` | Convert audio to mono WAV, for 3DVN builds older than Ogg support. `--music-rate` / `--sfx-rate` set its sample rates. |
 | `--ffmpeg PATH` | Use this ffmpeg program. |
-| `--music-rate HZ` | Music sample rate, default 32000. |
-| `--sfx-rate HZ` | Sound effect sample rate, default 22050. |
+| `--jobs N` | Parallel conversions (default: one per CPU). |
 
-Audio is converted to mono 16-bit WAV. WAV files are large, so lower the
-rates (for example `--music-rate 22050`) if SD space is a concern.
+## What you get
+
+- `main.3vs`: the entry point; it starts `ch/main.3vs`.
+- `ch/NAME.3vs`: one chapter per VNDS script. 3DVN loads one chapter at a
+  time (the `script` command), so even CLANNAD-sized games (380 scripts,
+  half a million lines) start quickly and fit the 3DS's memory.
+- `characters.3vs`: the speakers found with `--speakers`.
+- `bg/`, `sprites/`: pictures scaled to the 3DS top screen. Backgrounds are
+  JPEG, sprites PNG with transparency.
+- `hd/bg/`, `hd/sprites/`: the original pictures when they are larger than
+  the 3DS version (most 640x480 and larger games). The PC, Wii U and Android
+  versions draw these instead, so the game is as sharp as the original
+  there; the 3DS ignores them.
+- `audio/`: music, sounds and voices as Ogg Vorbis. Sources that already are
+  Ogg are copied unchanged; others (AAC, MP3, WAV...) are converted with
+  ffmpeg. Subfolders are kept, which matters on FAT32 SD cards with tens of
+  thousands of voice files.
+- `game.3vc`: title (and NVL display with `--nvl`).
 
 ## Image sizes and positioning
 
 The converter fits the source canvas inside the 400x240 top screen without
-stretching, centered horizontally and vertically. A 256x192 DS game becomes
-320x240; a 1920x1080 game becomes 400x225. Sprites and their coordinates use
-the same scale and offset as the canvas.
-
-By default, the canvas is inferred from the most common dimensions of the
-background images referenced by the scripts. A tie favors the largest image.
-The chosen size and scale are printed. If referenced backgrounds have
-different sizes, the converter warns: check the game's actual coordinate
-resolution and pass `--source-size` when needed. If no referenced background
-can be found, it warns and assumes 256x192. For example:
-
-    python3 tools/import_vnds.py ~/vnds/mygame games/mygame --source-size 1920x1080
-
-The source size is the game's coordinate canvas, not each sprite's dimensions.
-All images are scaled by the same factor; they are not independently fit to
-the screen. Backgrounds smaller than the canvas are centered by 3DVN and may
-need manual adjustment if the original game places them differently. The
-converter stops with an error if a scaled image exceeds the engine's
-1024x1024 texture limit; verify the source size or choose a smaller scale.
-Pillow is required; images are not silently copied unscaled.
-
-## What you get
-
-- `main.3vs`: entry point; defines speakers and includes the other files.
-- `s_NAME.3vs`: one file per VNDS script, with labels prefixed so they
-  never clash.
-- `bg/`, `sprites/`, `audio/`: converted assets.
+stretching, centred. A 256x192 DS game becomes 320x240; a 640x480 game also
+320x240 (with its full-size pictures kept in `hd/`). Sprites and their
+coordinates use the same scale and offset as the canvas. The chosen size and
+scale are printed. The converter stops with an error if a scaled image would
+exceed the 3DS's 1024x1024 texture limit; check the source size or choose a
+smaller scale.
 
 ## How commands are converted
 
 | VNDS | 3DVN |
 | --- | --- |
-| `text` | narration (or dialogue with `--speakers`) |
+| `text` | narration (or dialogue with `--speakers`); `text ~` / `text !` are skipped |
+| `text @...` | joined with the next line into one text box, as VNDS shows them |
 | `bgload` | `bg` (fade if a time is given); hides sprites, as in VNDS |
-| `setimg` | `show ... at X Y` (pixel coordinates) |
-| `sound`, `music` | `sfx`, `music` (`music ~` stops music) |
+| `setimg` | `show ... at X Y` (`setimg ~` hides all sprites) |
+| `sound`, `music` | `sfx`, `music`; `~` stops them; `sound X -1` loops |
 | `choice a\|b` | `menu`; the pick is stored in `selected` (1, 2, ...) |
-| `setvar`, `gsetvar` | `set` |
+| `setvar` | `set` (per save) |
+| `gsetvar` | `set g_...`: a global, kept across saves and new games (endings seen, routes unlocked) and synced with save sync |
 | `if`, `else`, `fi` | `if`, `else`, `end` |
-| `goto`, `label`, `jump file.scr` | `jump`, `label` |
+| `goto`, `label` | `jump`, `label` |
+| `jump file.scr [label]` | `script ch/file` (then to the label) |
+| `jump $file $label` | the same with the script and label taken from variables (CLANNAD's "call and return") |
 | `delay` | `wait` (VNDS counts 1/60 s) |
-| `cleartext` | ignored (each text line is its own page) |
+| `cleartext` | new page with `--nvl`; otherwise nothing (each line is its own box) |
 | `endscript` | `stop` |
+
+## Variables
+
+As in VNDS:
+
+- `setvar x = "text"`: quoted values are literal text (quotes removed).
+- `setvar x = y` / `if x == y`: a bare word that names a variable means its
+  value (Ever 17 and Never 7 rely on this); otherwise it is a number or text.
+- `$name` or `{$name}` in text and choices shows the variable's value.
+- `$name` in a file name (`bgload {$strS[1000]}.png`, `setimg $face 0 0`,
+  `sound $voice`) picks the file at run time. CLANNAD and Kanon choose most of
+  their pictures this way. The converter rewrites the names assigned to such
+  variables to the converted files, and converts every file they can name.
+
+## Endings
+
+VNDS games go back to their own title script (`jump main.scr`, sometimes
+with a label such as `Menu`) when a route ends. The converter turns that into the end of the story, so 3DVN counts the
+ending and returns to its own title screen, with Continue, Load and the
+other menus. Pass `--keep-main-loop` to keep the original jump instead (the
+game's own title menu then comes back, as on a DS).
+
+A jump that leads only to other jumps in a circle (Kanon does this after an
+ending, which freezes VNDS on the last screen) also ends the story.
 
 ## Limits
 
-The script prints a summary of everything it had to skip or approximate.
+The converter prints a summary of everything it had to skip or approximate.
+Almost all of it in the tested games is mistakes in the games' own scripts
+(misspelled commands, files named differently from the script), which the
+VNDS player skips too.
 
 - `random` has no equivalent yet: the variable is set to its low value.
-- `gsetvar` (global variables) is treated as a normal per-save variable.
-- A looping `sound` plays only once.
-- Sounds, including voice clips, stop when the player advances past a text
-  box; background music continues.
 - `setvar ~` (clear all variables) is skipped.
-- More than 8 choices: extras are dropped. More than 8 sprites on screen:
-  the oldest is hidden.
+- Choices with more than 8 options are split into pages of 7 with a
+  "More..." option. More than 8 sprites on screen: the oldest is hidden.
 - Missing images or audio are skipped (a missing background becomes black).
-- Moving to a new script mid-game is supported, but VNDS games that rely
-  on unusual script tricks may need hand editing of the `.3vs` files.
+- Text longer than about 400 bytes is split into several text boxes (3DVN
+  boxes hold 512 bytes).
+- A picture that would exceed the 3DS's 1024x1024 limit (a tall scrolling
+  image in True Remembrance) is shrunk to fit, with a warning.
+- Games with more than 128 variables (Kanon has about 950) need this
+  version of 3DVN or later on every device: their saves carry the extra
+  variables in an added block that older builds don't read.
 
 ## Checking the result
 
-Open the generated `.3vs` files in a text editor; they are plain text
-described in `documentation.txt`. If the game fails to start, the 3DS
-shows the file name and line of the error.
+`tests/walk_story.c` plays a converted game many times with random choices
+and lists script errors, missing files and the chapters reached:
+
+    cc -O2 -Isource tests/walk_story.c source/gs.c source/wrap.c -o /tmp/walk_story
+    /tmp/walk_story games/kanon 50
+
+The `.3vs` files are plain text, described in `documentation.txt`, and can
+be edited by hand.

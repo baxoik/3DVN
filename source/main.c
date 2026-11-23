@@ -1183,6 +1183,17 @@ static void apply_event_to_scene(const GsEvent *e)
 		if (get_picture("sprites", e->asset) == NULL) {
 			snprintf(notice, sizeof(notice), "missing sprites/%s", e->asset);
 		}
+	} else if (e->type == GS_EV_HIDE && strcmp(e->name, "*") == 0) {
+		/* hide *: every sprite (VNDS clears them all with a new background) */
+		for (int i = 0; i < MAX_SPRITES; ++i) {
+			Sprite *sprite = &scene.sprites[i];
+			if (!sprite->active) continue;
+			sprite->from = sprite->alpha;
+			sprite->to = 0.0f;
+			sprite->duration = e->seconds;
+			sprite->elapsed = 0.0f;
+			if (e->seconds <= 0.0f) sprite->active = 0;
+		}
 	} else if (e->type == GS_EV_HIDE) {
 		Sprite *sprite = find_sprite(e->name);
 		if (sprite != NULL) {
@@ -1649,6 +1660,14 @@ static int save_slot(int slot)
 	int ok = encoded != NULL && gs_bgloop_encode(&bgloop, loop_data)
 		&& fwrite(encoded, SAVE_FILE_SIZE, 1, file) == 1
 		&& fwrite(loop_data, sizeof(loop_data), 1, file) == 1;
+	if (ok && data->state.var_count > SAVE_FILE_VARS) {
+		/* variables past the main block's 128 (large VNDS conversions) */
+		size_t cap = (size_t)(GS_MAX_VARS - SAVE_FILE_VARS) * (GS_NAME_LEN + GS_STR_LEN + 8) + 8;
+		unsigned char *vars = malloc(cap);
+		size_t vars_size = vars != NULL ? save_encode_vars(data, vars, cap) : 0;
+		ok = vars_size > 0 && fwrite(vars, 1, vars_size, file) == vars_size;
+		free(vars);
+	}
 	if (ok && config.num[NUM_NVL_ACCUMULATE]) {
 		unsigned char page_data[NVL_PAGE_SAVE_MAX_BYTES];
 		size_t page_size = 0;
@@ -1820,13 +1839,22 @@ static int load_slot(int slot)
 				|| !gs_bgloop_decode_optional(&loaded_loop, loop_data, loop_size)) {
 				read_ok = 0;
 			} else {
-				unsigned char page_data[NVL_PAGE_SAVE_MAX_BYTES + 1];
-				size_t page_size = fread(page_data, 1, sizeof(page_data), file);
-				if (page_size) {
+				/* the rest: an optional VARX block (variables past 128), then an NVL page */
+				size_t cap = (size_t)(GS_MAX_VARS - SAVE_FILE_VARS) * (GS_NAME_LEN + GS_STR_LEN + 8) + 8
+					+ NVL_PAGE_SAVE_MAX_BYTES + 1;
+				unsigned char *rest = malloc(cap);
+				size_t rest_size = rest != NULL ? fread(rest, 1, cap, file) : 0;
+				long vars_size = rest != NULL ? save_decode_vars(rest, rest_size, data) : -1;
+				if (vars_size < 0) {
+					read_ok = 0;
+				} else if (rest_size > (size_t)vars_size) {
+					size_t page_size = rest_size - (size_t)vars_size;
 					has_page = 1;
-					if (nvl_page_decode(page_data, page_size, &loaded_page) != NVL_PAGE_OK)
+					if (page_size > NVL_PAGE_SAVE_MAX_BYTES
+						|| nvl_page_decode(rest + vars_size, page_size, &loaded_page) != NVL_PAGE_OK)
 						read_ok = 0;
 				}
+				free(rest);
 			}
 		}
 		if (ferror(file)) read_ok = 0;

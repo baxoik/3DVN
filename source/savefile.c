@@ -113,8 +113,11 @@ static void code_save(Cursor *c, SaveData *s)
 
 	GsState *st = &s->state;
 	i32(c, &st->pc);
-	i32(c, &st->var_count);
-	for (int i = 0; i < GS_MAX_VARS; ++i) {
+	int count = st->var_count;   /* the main block holds up to SAVE_FILE_VARS; see VARX */
+	if (c->writing && count > SAVE_FILE_VARS) count = SAVE_FILE_VARS;
+	i32(c, &count);
+	if (!c->writing) st->var_count = count;
+	for (int i = 0; i < SAVE_FILE_VARS; ++i) {
 		GsVar *var = &st->vars[i];
 		text(c, var->name, sizeof(var->name));
 		i32(c, &var->value.is_str);
@@ -193,6 +196,71 @@ int save_decode(const unsigned char *data, size_t size, SaveData *save)
 	Cursor c = {(unsigned char *)data, 0, 0, order == 2, order == 2};
 	code_save(&c, save);
 	return c.at == SAVE_FILE_SIZE;
+}
+
+size_t save_encode_vars(const SaveData *save, unsigned char *out, size_t cap)
+{
+	const GsState *st = &save->state;
+	if (st->var_count <= SAVE_FILE_VARS) return 0;
+	size_t used = 8;
+	if (cap < used) return 0;
+	memcpy(out, "VARX", 4);
+	unsigned count = (unsigned)(st->var_count - SAVE_FILE_VARS);
+	for (int i = 0; i < 4; ++i) out[4 + i] = (unsigned char)(count >> (8 * i));
+	for (int v = SAVE_FILE_VARS; v < st->var_count; ++v) {
+		const GsVar *var = &st->vars[v];
+		size_t name = strnlen(var->name, sizeof(var->name));
+		size_t text = var->value.is_str ? strnlen(var->value.str, sizeof(var->value.str)) : 0;
+		size_t need = 1 + name + 1 + (var->value.is_str ? 2 + text : 4);
+		if (used + need > cap) return 0;
+		out[used++] = (unsigned char)name;
+		memcpy(out + used, var->name, name);
+		used += name;
+		out[used++] = (unsigned char)(var->value.is_str ? 1 : 0);
+		if (var->value.is_str) {
+			out[used++] = (unsigned char)text;
+			out[used++] = (unsigned char)(text >> 8);
+			memcpy(out + used, var->value.str, text);
+			used += text;
+		} else {
+			unsigned n = (unsigned)(int)var->value.num;
+			for (int i = 0; i < 4; ++i) out[used++] = (unsigned char)(n >> (8 * i));
+		}
+	}
+	return used;
+}
+
+long save_decode_vars(const unsigned char *data, size_t size, SaveData *save)
+{
+	if (size < 8 || memcmp(data, "VARX", 4) != 0) return 0;
+	unsigned count = data[4] | data[5] << 8 | data[6] << 16 | (unsigned)data[7] << 24;
+	size_t at = 8;
+	GsState *st = &save->state;
+	for (unsigned k = 0; k < count; ++k) {
+		if (at + 2 > size || st->var_count >= GS_MAX_VARS) return -1;
+		size_t name = data[at++];
+		if (name >= GS_NAME_LEN || at + name + 1 > size) return -1;
+		GsVar *var = &st->vars[st->var_count];
+		memset(var, 0, sizeof(*var));
+		memcpy(var->name, data + at, name);
+		at += name;
+		var->value.is_str = data[at++] != 0;
+		if (var->value.is_str) {
+			if (at + 2 > size) return -1;
+			size_t text = data[at] | data[at + 1] << 8;
+			at += 2;
+			if (text >= GS_STR_LEN || at + text > size) return -1;
+			memcpy(var->value.str, data + at, text);
+			at += text;
+		} else {
+			if (at + 4 > size) return -1;
+			unsigned n = data[at] | data[at + 1] << 8 | data[at + 2] << 16 | (unsigned)data[at + 3] << 24;
+			var->value.num = (int)n;
+			at += 4;
+		}
+		st->var_count++;
+	}
+	return (long)at;
 }
 
 int save_peek(const unsigned char *data, size_t size, SaveHeader *header)

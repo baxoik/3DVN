@@ -1547,7 +1547,9 @@ void gs_next(const GsProgram *program, GsState *state, GsEvent *event)
 				: instr->op == OP_SHOW ? GS_EV_SHOW : GS_EV_HIDE;
 			if (instr->op == OP_SHOW || instr->op == OP_HIDE) {
 				copy_text(event->name, sizeof(event->name), instr->a);
-				copy_text(event->asset, sizeof(event->asset), instr->b);
+				/* {name} in a sprite's picture: chosen at run time (converted VNDS games) */
+				if (instr->op == OP_SHOW) interpolate(state, instr->b, event->asset, sizeof(event->asset));
+				else copy_text(event->asset, sizeof(event->asset), instr->b);
 				copy_text(event->pos, sizeof(event->pos), instr->c);
 			} else {
 				interpolate(state, instr->a, event->asset, sizeof(event->asset));
@@ -1629,13 +1631,15 @@ void gs_next(const GsProgram *program, GsState *state, GsEvent *event)
 			state->pc = state->call_stack[--state->call_depth];
 			break;
 		case OP_SCRIPT: {
-			GsValue value = make_string(instr->a);
+			char file[GS_STR_LEN];   /* "script ch/{name}": the file can come from a variable */
+			interpolate(state, instr->a, file, sizeof(file));
+			GsValue value = make_string(file);
 			if (!set_var(state, "_script", &value)) {
 				runtime_error(event, instr->line, "too many variables");
 				return;
 			}
 			event->type = GS_EV_SCRIPT;
-			copy_text(event->asset, sizeof(event->asset), instr->a);
+			copy_text(event->asset, sizeof(event->asset), file);
 			state->pc = 0;
 			state->call_depth = 0;
 			return;

@@ -263,6 +263,7 @@ blocks. Words are separated by spaces; text containing spaces goes in
 6.4 Foreground sprites
     show ID [IMAGE] [at POSITION | at X Y] [fade SECONDS]
     hide ID [fade SECONDS]
+    hide * [fade SECONDS]      (every sprite)
   ID is a slot name you choose (usually the character). IMAGE is the file in
   sprites/; if omitted it defaults to ID. Showing an ID that is already on
   screen swaps its image/position (use this for expression changes).
@@ -381,6 +382,8 @@ blocks. Words are separated by spaces; text containing spaces goes in
     call NAME            Run from the label; "return" comes back here.
     return               Return from a "call".
     script FILE          Switch to FILE.3vs inside the game folder.
+  FILE, and the file names given to bg, show, music and sfx, may contain
+  {name} to use a variable's value (e.g. bg {room}), as dialogue does.
     stop                 End the story.
   Calls may nest up to 32 deep. Reaching the end of the file ends the story.
   `script` keeps variables and the current scene state, but starts the target

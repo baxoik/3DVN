@@ -20,7 +20,12 @@
      66544  end
 
    Saves from Wii U builds before 2026-11-22 are the same layout big-endian, except that
-   the event type there is 4 bytes and the speaker starts at 4; save_decode reads those. */
+   the event type there is 4 bytes and the speaker starts at 4; save_decode reads those.
+
+   The main block holds the first SAVE_FILE_VARS (128) variables. A game with more (large
+   VNDS conversions) stores the rest in an extra "VARX" block after the background-loop
+   block (save_encode_vars / save_decode_vars); games with fewer write exactly the same
+   files as before. */
 
 #include <stddef.h>
 #include "gs.h"
@@ -30,6 +35,7 @@
 #define SAVE_MAGIC 0x32564433u
 #define SAVE_FILE_SIZE 66544u
 #define SAVE_HEADER_SIZE 88u
+#define SAVE_FILE_VARS 128     /* variables in the main block */
 
 typedef struct {
 	int active;
@@ -78,6 +84,14 @@ void save_encode(const SaveData *save, unsigned char out[SAVE_FILE_SIZE]);
 
 /* Reads a save written by any build (either byte order). 1 on success, 0 if not a save. */
 int save_decode(const unsigned char *data, size_t size, SaveData *save);
+
+/* The "VARX" block with the variables past SAVE_FILE_VARS: its size written to out (0 when
+   there are none, or if cap is too small). */
+size_t save_encode_vars(const SaveData *save, unsigned char *out, size_t cap);
+
+/* If data starts with a "VARX" block, appends its variables to save->state and returns the
+   block's size; 0 if there is none (or -1 if it is damaged). */
+long save_decode_vars(const unsigned char *data, size_t size, SaveData *save);
 
 /* Reads only the header (needs SAVE_HEADER_SIZE bytes). 1 on success, 0 if not a save. */
 int save_peek(const unsigned char *data, size_t size, SaveHeader *header);

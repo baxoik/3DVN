@@ -8,7 +8,7 @@
 
 #include <stddef.h>
 
-#define GS_MAX_VARS 128
+#define GS_MAX_VARS 1024   /* big VNDS conversions (Kanon) need several hundred */
 #define GS_MAX_CALLS 32
 #define GS_MAX_CHOICES 8
 #define GS_NAME_LEN 32
