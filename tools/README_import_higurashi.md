@@ -16,79 +16,70 @@ you own.
 
 ## Usage
 
-    python3 tools/import_higurashi.py "<chapter folder>" games/onikakushi
+    python3 tools/import_higurashi.py "<chapter folder>" games/onikakushi [options]
 
-Options:
+It works with two kinds of game folder and finds out which it has:
+
+- **the Steam release as installed** (640x480 art, no voices);
+- **the Steam release with 07th-Mod's full voice and graphics patch** (voices,
+  PS3 backgrounds and sprites, high-resolution versions of the other art, the
+  opening movie). See "Adding 07th-Mod" below.
 
 | Option | Meaning |
 | --- | --- |
-| `--art console\|remake\|original` | Art set. `console` is the game's default (with 07th-Mod's full patch: the PS3 art); `remake` the alternative sprites (`CGAlt`); `original` 07th-Mod's Ryukishi07 art. `--alt-art` = `--art remake`. |
-| `--adv` | 07th-Mod full patch: one line at a time in a text box with the speaker's name (in their colour), instead of full pages. |
+| `--backgrounds ps3\|original` | `ps3` (default): 07th-Mod's high-resolution PS3 backgrounds; `original`: the 640x480 originals. The Steam release only has the originals. |
+| `--sprites ps3\|mangagamer\|ryukishi` | `mangagamer`: MangaGamer's remade sprites (the Steam game's alternative art); `ryukishi`: the Ryukishi07-style sprites (the Steam game's default); `ps3`: 07th-Mod's PS3 sprites. Default: the game's own default (`ryukishi` on Steam, `ps3` with 07th-Mod). With 07th-Mod all three come at high resolution. |
+| `--adv` | 07th-Mod: one line at a time in a text box with the speaker's name (in their colour), instead of full pages. |
 | `--audio mangagamer\|gin\|houplus` | 07th-Mod music and sound set (default `mangagamer`). |
 | `--censor N` | 07th-Mod censorship level 0-5 (default 2, the mod's default). |
+| `--no-movies` | Leave out the opening movie (07th-Mod). |
+| `--movie-size WxH` | Size of the converted movie (default 256x144, smooth on every 3DS; at most 512x256). |
 | `--no-tips` | Leave out the TIPS. |
 | `--no-hd` | Don't keep the full-size pictures in `hd/` (3DS only). |
 | `--title T` | Game title (default "Higurashi - <arc>"). |
 
-Onikakushi converts in under a second to about 100 MB.
+Example, high-resolution backgrounds with MangaGamer's sprites:
+
+    python3 tools/import_higurashi.py ~/higurashi-07th-mod games/onikakushi --sprites mangagamer
+
+Where a chosen set lacks a sprite (07th-Mod's MangaGamer set has no close-up
+portraits), the PS3 one is used and the converter says how often.
 
 ## What is converted
 
-- The story in English, as the game shows it: full-screen (NVL) text that
-  stays on screen until the game clears the page. On the 3DS a page that would
-  not fit starts a new one.
+- The story in English: full-screen (NVL) text that stays on screen until the
+  game clears the page (on the 3DS a page that would not fit starts a new
+  one), or with `--adv` line by line with names.
 - Backgrounds, character sprites at their positions, music, sound effects,
-  screen shakes. Pictures are scaled for the 3DS; the originals go to `hd/` for
-  PC, Wii U and Android.
-- The order of play from `flow.txt` (scripts in `Update/` override `Scripts/`,
-  as in the game).
-- TIPS: after each day the TIPS that the game unlocks there are offered in a
-  menu ("TIPS: <title>", then "Continue"). Which day unlocks which TIPS is read
-  from the game's own data (`Managed/Assembly-CSharp.dll`).
-- Voices from 07th-Mod's voice-only patch (see below).
+  voices (07th-Mod), screen shakes. Pictures are scaled for the 3DS (07th-Mod's
+  16:9 art to 400x225); the originals go to `hd/` (at most 2048 pixels wide)
+  for PC, Wii U and Android.
+- The opening movie (07th-Mod), converted with `tools/mk3vv.py` (needs ffmpeg)
+  and played with 3DVN's `video` command; A skips it.
+- The order of play from `flow.txt` (`Update/` scripts override `Scripts/`),
+  and the TIPS: after each day the ones the game unlocks there are offered in a
+  menu, read from the game's own data (`Managed/Assembly-CSharp.dll`).
+- 07th-Mod's settings are decided when converting: its ADV/NVL switches,
+  censorship branches and called script sections are resolved then.
 
-Not converted: colour filters (red flashes, the negative effect), the title
-screen and the extras (`omake`). The converter lists what it skipped.
+Not converted: lip sync (the closed-mouth frame is shown), sliding sprites,
+colour filters (red flashes, night/sunset tints), the title screen and the
+extras (`omake`). The converter lists what it skipped.
 
-## Voices (07th-Mod)
+## Adding 07th-Mod
 
-07th-Mod's voice-only patch adds the voices of the console versions and keeps
-the original art, so it converts as is. It has two parts, from GitHub:
+Install it into a copy of the game, so the Steam folder stays as it is. The
+07th-Mod installer (github.com/07th-mod/python-patcher) lists the parts in
+`installData.json`; for Onikakushi, extract in this order:
 
-- [Onikakushi-Voices.7z](https://github.com/07th-mod/patch-releases/releases/download/higurashi-voice-only-v1.0/Onikakushi-Voices.7z)
-  (180 MB, the voices, in `SE/s19/...`)
-- [Onikakushi.Voice.Patch.v0.9.0.7z](https://github.com/07th-mod/onikakushi/releases/download/v0.9.0/Onikakushi.Voice.Patch.v0.9.0.7z)
-  (the scripts with voice commands, in `Update/`)
-
-Extract both into a copy of the game folder (so the Steam install stays as it
-is) and convert the copy:
-
-    cp -a "<chapter folder>" ~/higurashi-voiced
-    cd ~/higurashi-voiced && 7z x Onikakushi-Voices.7z && 7z x Onikakushi.Voice.Patch.v0.9.0.7z
-    python3 tools/import_higurashi.py ~/higurashi-voiced games/onikakushi
-
-Onikakushi voiced is about 310 MB (5,000 voice clips). The voices play like
-3DVN voice clips: in the backlog, and auto mode waits for them.
-
-## 07th-Mod full patch (PS3 art, voices, ADV mode)
-
-The full voice and graphics patch converts too. The 07th-Mod installer
-(github.com/07th-mod/python-patcher) lists its parts in `installData.json`;
-for Onikakushi, extract into a copy of the game, in this order:
-
-1. `onikakushi-base.7z` (1.35 GB: voices, PS3 backgrounds and sprites)
+1. `onikakushi-base.7z` (1.35 GB: voices, PS3 backgrounds and sprites, movie)
 2. `MangaGamer-Question-BGM-SE-Restore.7z` (music and sound sets)
 3. `Onikakushi-UI_5.2.2f1_unix.7z` (not used by the converter)
-4. optionally `hou-ogsprites-ep01.7z` (Ryukishi07 sprites for `--art original`)
+4. `hou-ogsprites-ep01.7z` (high-resolution Ryukishi07 sprites)
 5. `Onikakushi.Voice.and.Graphics.Patch.zip` from github.com/07th-mod/onikakushi
    (the scripts, last)
 
-The mod's settings are decided when converting (`--adv`, `--art`, `--audio`,
-`--censor`): its ADV/NVL switches, censorship branches and called script
-sections are resolved then. The 16:9 PS3 art becomes 400x225 on the 3DS, with
-the full-size art in `hd/` (at most 2048 pixels wide) for PC, Wii U and
-Android. Onikakushi: about 430 MB, 5,000 voices. Lip sync, sliding sprites
-(MoveBustshot) and the colour filters (night/sunset tints) are not converted.
+Onikakushi with 07th-Mod converts in about 10 seconds to about 450 MB.
 
 ## Checking
 

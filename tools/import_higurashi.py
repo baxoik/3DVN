@@ -15,7 +15,7 @@ Output: main.3vs, ch/*.3vs (one per day / TIPS, plus ch/flow.3vs that runs them 
 and offers each day's new TIPS), bg/, sprites/ (3DS size), hd/ (originals for PC, Wii U and
 Android), audio/ (Ogg, copied unchanged), game.3vc (NVL display, text kept on screen).
 """
-import argparse, concurrent.futures, glob, os, re, shutil, struct, sys
+import argparse, concurrent.futures, glob, os, re, shutil, struct, subprocess, sys
 from collections import Counter
 
 try:
@@ -26,9 +26,14 @@ except ImportError:
 SCREEN_W, SCREEN_H = 400, 240
 CANVAS_H = 480                          # the game's coordinate space is 480 high: 640 wide
                                         # (4:3), or 853 with 07th-Mod's 16:9 screen
-# 07th-Mod art and audio sets: folders searched in order (as in its init.txt)
-ART_SETS = {"console": ["CG"], "remake": ["CGAlt", "CG"],
-            "original": ["OGBackgrounds", "OGSprites", "CG"]}
+# Art: folders searched in order, per source. The Steam release has the 640x480 art only
+# (its default sprites in CG, the MangaGamer remake sprites in CGAlt); 07th-Mod's full
+# patch adds PS3 backgrounds and sprites (in CG) and high-resolution versions of the
+# others (OGBackgrounds, CGAlt, OGSprites).
+BACKGROUNDS = {"steam": {"ps3": ["CG"], "original": ["CG"]},
+               "07th-mod": {"ps3": ["CG"], "original": ["OGBackgrounds", "CG"]}}
+SPRITES = {"steam": {"ps3": ["CG"], "mangagamer": ["CGAlt", "CG"], "ryukishi": ["CG"]},
+           "07th-mod": {"ps3": ["CG"], "mangagamer": ["CGAlt", "CG"], "ryukishi": ["OGSprites", "CG"]}}
 AUDIO_SETS = {"mangagamer": (["April2019BGM", "BGM"], ["SE"]),
               "gin": (["OGBGM", "BGM"], ["OGSE", "SE"]),
               "houplus": (["HouPlusBGM", "BGM"], ["OGSE", "SE"])}
@@ -268,8 +273,16 @@ class Converter:
             sys.exit(f"no *_Data/StreamingAssets folder in {a.src}")
         self.data = data[0]
         self.sa = os.path.join(self.data, "StreamingAssets")
-        art = "remake" if a.alt_art else a.art
-        self.art = [os.path.join(self.sa, f) for f in ART_SETS[art]]
+        init = "".join(open(p, encoding="utf-8-sig", errors="replace").read()
+                       for p in (self.script_path("init"),) if p)
+        self.source = "07th-mod" if "ModAddArtset" in init else "steam"
+        sprites = a.sprites or ("ps3" if self.source == "07th-mod" else "ryukishi")
+        if self.source == "steam" and (a.backgrounds == "ps3" or sprites == "ps3"):
+            notes.append("the Steam release has no PS3 art (that comes with 07th-Mod's full patch): "
+                         "its own art is used")
+        self.bg_folders = [os.path.join(self.sa, f) for f in BACKGROUNDS[self.source][a.backgrounds]]
+        self.sprite_folders = [os.path.join(self.sa, f) for f in SPRITES[self.source][sprites]]
+        self.art_choice = f"{a.backgrounds} backgrounds, {sprites} sprites"
         bgm, se = AUDIO_SETS[a.audio]
         self.bgm = [os.path.join(self.sa, f) for f in bgm]
         self.se = [os.path.join(self.sa, f) for f in se]
@@ -278,12 +291,11 @@ class Converter:
         self.indexes = {}
         self.sources = {}     # converted audio name -> source file
         self.parsed = {}
+        self.movies = {}
         self.chars = {}       # character id -> (name, colour)
         # settings the scripts test (07th-Mod), decided at conversion time
         self.flags = {"GADVMode": 1 if a.adv else 0, "GCensor": a.censor, "GHideCG": 0,
-                      "GLipSync": 0, "GArtStyle": 0}
-        init = "".join(open(p, encoding="utf-8-sig", errors="replace").read()
-                       for p in (self.script_path("init"),) if p)
+                      "GLipSync": 0, "GArtStyle": 0, "GVideoOpening": 1 if a.no_movies else 2}
         wide = re.search(r'SetScreenAspect\(\s*"0\.5625"', init) is not None
         self.canvas_w = CANVAS_H * 16 / 9 if wide else 640
         self.scale = min(SCREEN_W / self.canvas_w, SCREEN_H / CANVAS_H)
@@ -325,8 +337,13 @@ class Converter:
                 return current, "/".join(real[:-1] + [os.path.splitext(real[-1])[0]])
         return None, None
 
-    def picture(self, name):
-        return self.find(self.art, name, ".png")
+    def picture(self, name, kind="bg"):
+        folders = self.bg_folders if kind == "bg" else self.sprite_folders
+        path, real = self.find(folders, name, ".png")
+        if path and kind == "sprite" and len(folders) > 1 and not path.startswith(folders[0] + os.sep) \
+                and real.lower().startswith(("sprite/", "portrait/")):
+            warn("character sprite missing from the chosen set (the PS3/default one used)", name)
+        return path, real
 
     @staticmethod
     def factor(w, h):
@@ -418,6 +435,29 @@ class Converter:
         self.page += len(text)
         out.append(quote(text))
 
+    def movie(self, name):
+        """movies/<name>.mp4 (or .ogv) -> video/<name>.3vv + .wav, made with mk3vv.py"""
+        if name in self.movies:
+            return self.movies[name]
+        self.movies[name] = None
+        src = next((p for p in (self.find([os.path.join(self.sa, "movies")], name, ext)[0]
+                                for ext in (".mp4", ".ogv", ".webm")) if p), None)
+        if not src:
+            warn("missing movie", name)
+            return None
+        target = os.path.join(self.out, "video", ident(name))
+        if not os.path.exists(target + ".3vv"):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mk3vv.py")
+            result = subprocess.run([sys.executable, "-I", tool, src, target, "--fps", "15",
+                                     "--size", self.a.movie_size], capture_output=True, text=True)
+            if result.returncode or not os.path.exists(target + ".3vv"):
+                warn("movie not converted (needs ffmpeg)", f"{name}: {result.stderr.strip()[-200:]}")
+                return None
+            print(f"movie {name}: converted")
+        self.movies[name] = ident(name)
+        return self.movies[name]
+
     def character(self, name):
         """an ADV speaker "<color=#5ec69a>Mion</color>" -> its 3DVN character id"""
         colour = re.search(r"#([0-9a-fA-F]{6})", name)
@@ -478,16 +518,16 @@ class Converter:
                 # (layer, character, "sprite/name_", "mouth frame", [mask, style,] x, y, ...)
                 layer, pic = args[0], f"{args[2]}{args[3]}"
                 x, y = (args[6], args[7]) if cmd.endswith("Filtering") else (args[4], args[5])
-                path, real = self.picture(pic)
+                path, real = self.picture(pic, "sprite")
                 if not path:
-                    path, real = self.picture(f"{args[2]}0")
+                    path, real = self.picture(f"{args[2]}0", "sprite")
             else:
                 layer, pic = args[0], args[1]
                 if pic in ("", "NULL"):   # an empty picture clears the layer
                     out.append(f"hide L{layer}")
                     return
                 x, y = (args[4], args[5]) if cmd.endswith("Filtering") else (args[2], args[3])
-                path, real = self.picture(pic)
+                path, real = self.picture(pic, "sprite")
             seconds = args[-2] if len(args) >= 2 else 0
             if not path:
                 warn("missing picture", f"{where}: {pic}")
@@ -567,7 +607,10 @@ class Converter:
         elif cmd in ("DrawFilm", "FadeFilm", "Negative", "ModSetLayerFilter"):
             warn("colour filter (tint / negative) not converted")
         elif cmd == "ModPlayMovie":
-            warn("movie not converted", f"{where}: {args[0] if args else ''}")
+            self.flush(out)
+            name = self.movie(args[0])
+            if name:
+                out.append(f"video {name}")
         elif cmd in ("DrawSprite", "MoveSprite", "FadeSprite", "MoveBustshot",
                      "DrawSpriteWithFiltering"):
             warn(f"effect '{cmd}' not converted")
@@ -731,10 +774,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("src", help="the installed chapter folder (with HigurashiEpNN_Data)")
     ap.add_argument("out")
-    ap.add_argument("--art", choices=sorted(ART_SETS), default="console",
-                    help="art set: console (the game's default; PS3 art with 07th-Mod), remake "
-                         "(CGAlt), original (07th-Mod's Ryukishi07 art)")
-    ap.add_argument("--alt-art", action="store_true", help="same as --art remake")
+    ap.add_argument("--backgrounds", choices=["ps3", "original"], default="ps3",
+                    help="ps3: 07th-Mod's high-resolution PS3 backgrounds (default); original: "
+                         "the 640x480 originals (all the Steam release has)")
+    ap.add_argument("--sprites", choices=["ps3", "mangagamer", "ryukishi"], default=None,
+                    help="ps3: 07th-Mod's PS3 sprites; mangagamer: MangaGamer's remade sprites "
+                         "(the Steam game's alternative art); ryukishi: the Ryukishi07-style "
+                         "sprites (the Steam game's default). Default: the game's own default")
+    ap.add_argument("--no-movies", action="store_true", help="leave out the opening movie")
+    ap.add_argument("--movie-size", default="256x144",
+                    help="video size (default 256x144, smooth on every 3DS; at most 512x256)")
     ap.add_argument("--audio", choices=sorted(AUDIO_SETS), default="mangagamer",
                     help="07th-Mod music/sound set (default mangagamer)")
     ap.add_argument("--adv", action="store_true",
@@ -746,6 +795,7 @@ def main():
     a = ap.parse_args()
     c = Converter(a)
     steps, tips = c.run()
+    print(f"source: {'07th-Mod full patch' if c.source == '07th-mod' else 'Steam release'}; {c.art_choice}")
     print(f"done: {len(c.used['bg'])} backgrounds, {len(c.used['sprites'])} sprites, "
           f"{len(c.used['audio'])} sounds")
     for k, v in report.most_common():
