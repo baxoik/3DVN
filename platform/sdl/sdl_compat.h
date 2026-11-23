@@ -27,6 +27,12 @@ typedef int32_t Result;
 /* libctru threads (used for background save sync), on SDL threads */
 typedef struct VnThread *Thread;
 typedef void (*ThreadFunc)(void *);
+/* PC desktop mode (the default on PC; VN_DUAL=1 for the classic two-screen window):
+   one resizable window with the top screen; the bottom (touch) screen appears as an overlay
+   only when main.c says it's needed (menus, choices, title, game list). */
+int vn_desktop_mode(void);
+void vn_desktop_overlay(int visible);
+
 Thread threadCreate(ThreadFunc entry, void *arg, size_t stack_size, int prio, int core_id, bool detached);
 Result threadJoin(Thread thread, u64 timeout_ns);
 void threadFree(Thread thread);

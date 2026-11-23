@@ -23,13 +23,32 @@ Needs a C compiler, SDL2 and SDL2_ttf (e.g. `dnf install SDL2-devel SDL2_ttf-dev
 
 ```sh
 make -f platform/sdl/Makefile.pc          # -> ./3dvn-pc, games in ./3dvn/games/
-./3dvn-pc
+./3dvn-pc                                 # desktop window
+./3dvn-pc --fullscreen                    # fullscreen (also F11 / Alt+Enter)
+./3dvn-pc --dual                          # the classic two-screen window
 ```
 
-Keys: Z/Enter/Space = A, X/Backspace = B, S = X, A = Y, Q = L, W/Tab = R (hold to
-fast-forward), Esc = START, Shift = SELECT, arrows = D-pad. Clicking on the bottom
-screen is a touch. A game controller also works. The system font is used (set
-`VN_FONT=/path/to/font.ttf` to choose one).
+**Desktop mode** (the default): one resizable window showing the main screen in the wide
+16:9 layout, rendered sharply for your screen. Menus, save slots, options, choices, the title
+menu and the game list appear as a clickable overlay over the dimmed scene, only while needed.
+
+| | reading | with the overlay up |
+| --- | --- | --- |
+| left click | next line | click a button |
+| right click | menu | back |
+| mouse wheel | down: next line, up: backlog | move through lists |
+| Esc | menu | back |
+| F11 / Alt+Enter | fullscreen on / off | |
+
+The keyboard keys below still work. Quit with the window's close button, the game list's
+Exit, or the in-game Quit. Games, saves and settings are the same as on the 3DS and Wii U
+(`./3dvn/games/`, `./3dvn/saves/`), including Sync Saves.
+
+**Two-screen mode** (`--dual`, `VN_DUAL=1`; also used by the test scripts): both screens in one
+window, top above bottom (2x by default, `VN_SCALE=3` etc.); clicking on the bottom screen is a
+touch. Keys: Z/Enter/Space = A, X/Backspace = B, S = X, A = Y, Q = L, W/Tab = R (hold to
+fast-forward), Esc = START, Shift = SELECT, arrows = D-pad. A game controller also works. The
+system font is used (set `VN_FONT=/path/to/font.ttf` to choose one).
 
 ## Wii U
 

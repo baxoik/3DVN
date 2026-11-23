@@ -1469,7 +1469,8 @@ static void apply_screen_options(void)
 #ifdef __WIIU__
 	top_w = (float)vn_wiiu_set_tv_wide(display_options.tv_wide);
 #elif defined(VN_SDL)
-	top_w = getenv("VN_WIDE") != NULL ? 427.0f : 400.0f;   /* PC test of the wide TV layout */
+	top_w = getenv("VN_WIDE") != NULL || vn_desktop_mode() ? 427.0f : 400.0f;   /* wide layout */
+	off_tv = vn_desktop_mode();   /* one screen: dialogue and choices stay on the main screen */
 #endif
 }
 
@@ -6023,8 +6024,19 @@ static void handle_play_input(u32 down, u32 held, float dt)
 
 /* ---------- main ---------- */
 
-int main(void)
+int main(int argc, char **argv)
 {
+#if defined(VN_SDL) && !defined(__WIIU__)
+	/* PC: --fullscreen, --dual (the classic two-screen window), --desktop */
+	for (int i = 1; i < argc; ++i) {
+		if (!strcmp(argv[i], "--fullscreen")) setenv("VN_FULLSCREEN", "1", 1);
+		else if (!strcmp(argv[i], "--dual")) setenv("VN_DUAL", "1", 1);
+		else if (!strcmp(argv[i], "--desktop")) setenv("VN_DESKTOP", "1", 1);
+	}
+#else
+	(void)argc;
+	(void)argv;
+#endif
 	gfxInitDefault();
 	cfguInit();
 	C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
@@ -6197,6 +6209,11 @@ int main(void)
 				fast_forward ? " ff" : "", auto_mode ? " auto" : "", panel != PANEL_NONE ? " panel" : "");
 			vn_frame_note(frame_note);
 		}
+#endif
+#if defined(VN_SDL) && !defined(__WIIU__)
+		/* PC desktop mode: the bottom (touch) screen shows as an overlay only when needed */
+		vn_desktop_overlay(mode != MODE_PLAY || panel != PANEL_NONE
+			|| (waiting == PLAY_MENU && event.choice_count > 0 && !ui_hidden));
 #endif
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 #ifdef OFF_TV

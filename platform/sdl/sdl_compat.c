@@ -51,6 +51,10 @@ struct C3D_RenderTarget {
 };
 
 static Output outputs[2];
+/* PC desktop mode (see sdl_compat.h) */
+static int desktop, overlay_visible, fullscreen;
+static u32 mouse_keys;            /* buttons the mouse pressed this frame (one-frame pulses) */
+static Uint32 last_mouse_move;
 static int output_count;
 static C3D_RenderTarget targets[2];
 static C3D_RenderTarget *current_target;
@@ -73,6 +77,20 @@ static void place_targets(void)
 		targets[i].place = (SDL_Rect){(out->width - w) / 2, (out->height - h) / 2, w, h};
 	}
 #else
+	if (desktop) {
+		/* the top screen fits the window (bars where the shape differs); the bottom screen,
+		   when shown, is a centred overlay three quarters of its height */
+		Output *out = &outputs[0];
+		SDL_GetRendererOutputSize(out->renderer, &out->width, &out->height);
+		float lw = (float)targets[GFX_TOP].logical_w, lh = TOP_H;
+		float fit = fminf(out->width / lw, out->height / lh);
+		int w = (int)(lw * fit), h = (int)(lh * fit);
+		targets[GFX_TOP].place = (SDL_Rect){(out->width - w) / 2, (out->height - h) / 2, w, h};
+		int oh = h * 3 / 4, ow = oh * BOTTOM_W / BOTTOM_H;
+		targets[GFX_BOTTOM].place = overlay_visible
+			? (SDL_Rect){(out->width - ow) / 2, (out->height - oh) / 2, ow, oh} : (SDL_Rect){0, 0, 0, 0};
+		return;
+	}
 	int top_w = (int)(targets[GFX_TOP].logical_w * TOP_SCALE), top_h = (int)(TOP_H * TOP_SCALE);
 	int bottom_w = (int)(BOTTOM_W * BOTTOM_SCALE), bottom_h = (int)(BOTTOM_H * BOTTOM_SCALE);
 	targets[GFX_TOP].place = (SDL_Rect){0, 0, top_w, top_h};
@@ -155,10 +173,26 @@ void gfxInitDefault(void)
 	if (scale != NULL && atof(scale) >= 1.0) {
 		TOP_SCALE = BOTTOM_SCALE = (float)atof(scale);
 	}
-	int top_logical = getenv("VN_WIDE") != NULL ? 427 : TOP_W;   /* test the Wii U wide TV layout */
+	desktop = getenv("VN_DESKTOP") != NULL || (getenv("VN_DUAL") == NULL && getenv("VN_SCRIPT") == NULL);
+	int top_logical = getenv("VN_WIDE") != NULL || desktop ? 427 : TOP_W;   /* wide layout (as on a TV) */
 	int width = (int)(top_logical * TOP_SCALE), height = (int)((TOP_H + BOTTOM_H) * TOP_SCALE);
+	Uint32 window_flags = 0;
+	if (desktop) {
+		/* one window, 16:9, sized to the screen; render sharply for the screen's height */
+		SDL_DisplayMode mode;
+		int screen_h = SDL_GetDesktopDisplayMode(0, &mode) == 0 ? mode.h : 1080;
+		if (getenv("VN_SCALE") == NULL) {
+			TOP_SCALE = (float)screen_h / TOP_H;
+			BOTTOM_SCALE = TOP_SCALE * 0.75f;
+		}
+		height = screen_h * 2 / 3;
+		width = height * 16 / 9;
+		window_flags = SDL_WINDOW_RESIZABLE;
+		fullscreen = getenv("VN_FULLSCREEN") != NULL;
+		if (fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+	}
 	outputs[0].window = SDL_CreateWindow("3DVN", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-		width, height, 0);
+		width, height, window_flags);
 	output_count = 1;
 	targets[GFX_TOP] = (C3D_RenderTarget){GFX_TOP, 0, TOP_SCALE, top_logical, TOP_H, NULL, {0}, 0};
 	targets[GFX_BOTTOM] = (C3D_RenderTarget){GFX_BOTTOM, 0, BOTTOM_SCALE, BOTTOM_W, BOTTOM_H, NULL, {0}, 0};
@@ -922,6 +956,20 @@ void C3D_FrameEnd(u8 flags)
 		SDL_SetRenderTarget(r, NULL);
 		SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
 		SDL_RenderClear(r);
+		if (desktop) {
+			place_targets();
+			SDL_RenderCopy(r, targets[GFX_TOP].texture, NULL, &targets[GFX_TOP].place);
+			if (overlay_visible) {
+				SDL_SetRenderDrawColor(r, 0, 0, 0, 150);
+				SDL_RenderFillRect(r, &targets[GFX_TOP].place);
+				SDL_Rect frame = targets[GFX_BOTTOM].place;
+				frame.x -= 2; frame.y -= 2; frame.w += 4; frame.h += 4;
+				SDL_SetRenderDrawColor(r, 90, 90, 90, 255);
+				SDL_RenderFillRect(r, &frame);
+				SDL_RenderCopy(r, targets[GFX_BOTTOM].texture, NULL, &targets[GFX_BOTTOM].place);
+			}
+			continue;
+		}
 		for (int i = 0; i < 2; ++i) {
 			if (targets[i].output == o) SDL_RenderCopy(r, targets[i].texture, NULL, &targets[i].place);
 		}
@@ -978,8 +1026,13 @@ static u32 key_named(const char *name)
 }
 
 /* Advances the test script by one frame; returns the keys it holds. */
+static int desktop_event(const SDL_Event *e);
+static SDL_Event script_release;
+static int script_release_frames;
+
 static u32 script_step(void)
 {
+	if (script_release_frames > 0 && --script_release_frames == 0) SDL_PushEvent(&script_release);
 	static int no_script, frames;
 	if (++frames == 60) boot_log("60 frames rendered");
 	if (script_file == NULL) {
@@ -1024,6 +1077,29 @@ static u32 script_step(void)
 			script_tap_frames = 10;
 			return 0;
 		}
+		/* real mouse events in window pixels (desktop mode): click X Y, rclick, wheel up|down */
+		if ((!strcmp(cmd, "click") && n >= 3) || !strcmp(cmd, "rclick")) {
+			SDL_Event down = {0}, up = {0};
+			down.type = SDL_MOUSEBUTTONDOWN;
+			down.button.button = !strcmp(cmd, "rclick") ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
+			down.button.windowID = SDL_GetWindowID(outputs[0].window);
+			down.button.x = n >= 3 ? atoi(arg1) : 10;
+			down.button.y = n >= 3 ? atoi(arg2) : 10;
+			up = down;
+			up.type = SDL_MOUSEBUTTONUP;
+			SDL_PushEvent(&down);
+			script_release = up;          /* let go a few frames later, like a real click */
+			script_release_frames = 6;
+			return 0;
+		}
+		if (!strcmp(cmd, "wheel") && n >= 2) {
+			SDL_Event wheel = {0};
+			wheel.type = SDL_MOUSEWHEEL;
+			wheel.wheel.y = !strcmp(arg1, "up") ? 1 : -1;
+			/* handed to the desktop handler directly: SDL2-on-SDL3 garbles pushed wheel events */
+			if (desktop) desktop_event(&wheel);
+			return 0;
+		}
 		if (!strcmp(cmd, "shot") && n >= 2) {
 			snprintf(shot_name, sizeof(shot_name), "%s", arg1);
 			pending_shot = shot_name;
@@ -1064,7 +1140,11 @@ static int to_bottom(int output, float x, float y, touchPosition *pos)
 {
 	C3D_RenderTarget *t = &targets[GFX_BOTTOM];
 	if (t->output != output) return 0;
-	float bx = (x - t->place.x) / t->scale, by = (y - t->place.y) / t->scale;
+	if (t->place.w <= 0 || t->place.h <= 0) return 0;
+	/* window pixels -> bottom-screen pixels, by how large the screen is shown (in desktop
+	   mode that differs from its render scale) */
+	float bx = (x - t->place.x) * (float)t->logical_w / (float)t->place.w;
+	float by = (y - t->place.y) * (float)t->logical_h / (float)t->place.h;
 	if (bx < 0 || by < 0 || bx >= BOTTOM_W || by >= BOTTOM_H) return 0;
 	pos->px = (u16)bx;
 	pos->py = (u16)by;
@@ -1166,11 +1246,59 @@ void vn_wiiu_exit_to_menu(void)
 }
 #endif
 
+int vn_desktop_mode(void)
+{
+	return desktop;
+}
+
+void vn_desktop_overlay(int visible)
+{
+	overlay_visible = visible;
+}
+
+/* Desktop mode mouse and keys. Returns 1 if the event was handled here.
+   Reading: left click / wheel down = next line (A), right click = menu (X), wheel up = backlog
+   (L). With the overlay up: clicks on it are touches, right click = back (B), the wheel moves
+   through lists (D-pad). F11 or Alt+Enter: fullscreen. */
+static int desktop_event(const SDL_Event *e)
+{
+	if (e->type == SDL_KEYDOWN && !e->key.repeat && (e->key.keysym.sym == SDLK_F11
+		|| (e->key.keysym.sym == SDLK_RETURN && (e->key.keysym.mod & KMOD_ALT)))) {
+		fullscreen = !fullscreen;
+		SDL_SetWindowFullscreen(outputs[0].window, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+		return 1;
+	}
+	if (e->type == SDL_MOUSEMOTION) {
+		last_mouse_move = SDL_GetTicks();
+		SDL_ShowCursor(SDL_ENABLE);
+	}
+	if (e->type == SDL_MOUSEWHEEL) {
+		if (overlay_visible) mouse_keys |= e->wheel.y > 0 ? KEY_DUP : KEY_DDOWN;
+		else mouse_keys |= e->wheel.y > 0 ? KEY_L : KEY_A;
+		return 1;
+	}
+	if (e->type == SDL_MOUSEBUTTONDOWN) {
+		if (e->button.button == SDL_BUTTON_RIGHT) {
+			mouse_keys |= overlay_visible ? KEY_B : KEY_X;
+			return 1;
+		}
+		if (e->button.button == SDL_BUTTON_LEFT) {
+			if (!overlay_visible) {
+				mouse_keys |= KEY_A;
+				return 1;
+			}
+			return 0;   /* a touch on the overlay (or nothing, outside it) */
+		}
+	}
+	return 0;
+}
+
 bool aptMainLoop(void)
 {
 	SDL_Event e;
 	while (SDL_PollEvent(&e)) {
 		if (e.type == SDL_QUIT) running = 0;
+		if (desktop && desktop_event(&e)) continue;
 		if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
 			touch_held = to_bottom(output_of_window(e.button.windowID), (float)e.button.x, (float)e.button.y, &touch_pos);
 		} else if (e.type == SDL_MOUSEMOTION && touch_held) {
@@ -1203,7 +1331,9 @@ static u32 read_keys(void)
 	if (k[SDL_SCANCODE_A]) keys |= KEY_Y;
 	if (k[SDL_SCANCODE_Q]) keys |= KEY_L;
 	if (k[SDL_SCANCODE_W] || k[SDL_SCANCODE_TAB]) keys |= KEY_R;
-	if (k[SDL_SCANCODE_ESCAPE]) keys |= KEY_START;
+	/* Esc: START (exit) in the two-screen layout; in desktop mode menu / back instead, and the
+	   window's close button (or the game list's Exit) quits */
+	if (k[SDL_SCANCODE_ESCAPE]) keys |= desktop ? (overlay_visible ? KEY_B : KEY_X) : KEY_START;
 	if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) keys |= KEY_SELECT;
 	if (k[SDL_SCANCODE_UP]) keys |= KEY_DUP;
 	if (k[SDL_SCANCODE_DOWN]) keys |= KEY_DDOWN;
@@ -1245,8 +1375,10 @@ static u32 read_keys(void)
 
 void hidScanInput(void)
 {
-	u32 keys = read_keys() | script_step();
+	u32 keys = read_keys() | script_step() | mouse_keys;
+	mouse_keys = 0;
 	if (touch_held) keys |= KEY_TOUCH;
+	if (desktop && fullscreen && SDL_GetTicks() - last_mouse_move > 3000) SDL_ShowCursor(SDL_DISABLE);
 	keys_prev = keys_held;
 	keys_held = keys;
 	keys_down = keys_held & ~keys_prev;
