@@ -277,14 +277,20 @@ class Converter:
         return w, h
 
     def sound(self, folder, name):
-        """"bgm/name" for StreamingAssets/<folder>/<name>.ogg in any case, else None"""
-        for f in os.listdir(self.sa):
-            if f.lower() == folder.lower():
-                path = self.index(os.path.join(self.sa, f)).get(name.lower() + ".ogg")
-                if path:
-                    self.sources[f.lower() + "/" + os.path.splitext(os.path.basename(path))[0]] = path
-                    return f.lower() + "/" + os.path.splitext(os.path.basename(path))[0]
-        return None
+        """"se/s19/00/992700001" for StreamingAssets/<folder>/<name>.ogg, where name may
+        have subfolders (07th-Mod voices) and any letter case; None if there is none"""
+        current, parts = self.sa, [folder] + name.replace("\\", "/").split("/")
+        real = []
+        for i, part in enumerate(parts):
+            want = part.lower() + (".ogg" if i == len(parts) - 1 else "")
+            found = self.index(current).get(want)
+            if not found:
+                return None
+            real.append(os.path.basename(found))
+            current = found
+        converted = "/".join([real[0].lower()] + real[1:-1] + [os.path.splitext(real[-1])[0]])
+        self.sources[converted] = current
+        return converted
 
     # ---- one script file -> one chapter ----
     def convert(self, name):

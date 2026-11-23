@@ -42,11 +42,33 @@ Onikakushi converts in under a second to about 100 MB.
 - TIPS: after each day the TIPS that the game unlocks there are offered in a
   menu ("TIPS: <title>", then "Continue"). Which day unlocks which TIPS is read
   from the game's own data (`Managed/Assembly-CSharp.dll`).
-- 07th-Mod voices: `PlayVoice` lines are converted when the mod's voice files
-  are installed (StreamingAssets/voice).
+- Voices from 07th-Mod's voice-only patch (see below).
 
 Not converted: colour filters (red flashes, the negative effect), the title
 screen and the extras (`omake`). The converter lists what it skipped.
+
+## Voices (07th-Mod)
+
+07th-Mod's voice-only patch adds the voices of the console versions and keeps
+the original art, so it converts as is. It has two parts, from GitHub:
+
+- [Onikakushi-Voices.7z](https://github.com/07th-mod/patch-releases/releases/download/higurashi-voice-only-v1.0/Onikakushi-Voices.7z)
+  (180 MB, the voices, in `SE/s19/...`)
+- [Onikakushi.Voice.Patch.v0.9.0.7z](https://github.com/07th-mod/onikakushi/releases/download/v0.9.0/Onikakushi.Voice.Patch.v0.9.0.7z)
+  (the scripts with voice commands, in `Update/`)
+
+Extract both into a copy of the game folder (so the Steam install stays as it
+is) and convert the copy:
+
+    cp -a "<chapter folder>" ~/higurashi-voiced
+    cd ~/higurashi-voiced && 7z x Onikakushi-Voices.7z && 7z x Onikakushi.Voice.Patch.v0.9.0.7z
+    python3 tools/import_higurashi.py ~/higurashi-voiced games/onikakushi
+
+Onikakushi voiced is about 310 MB (5,000 voice clips). The voices play like
+3DVN voice clips: in the backlog, and auto mode waits for them.
+
+The newer full 07th-Mod patch (PS3 sprites and backgrounds, ADV mode) is not
+supported yet: its scripts use the mod's own commands.
 
 ## Checking
 
