@@ -10,7 +10,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#ifdef __GLIBC__
+#if defined(__GLIBC__) || defined(__ANDROID__)
 typedef off64_t pack_off_t;
 #else
 typedef _off64_t pack_off_t;   /* newlib (3DS, Wii U) */
@@ -174,6 +174,20 @@ static int stream_close(void *cookie)
 	return 0;
 }
 
+#ifdef __ANDROID__
+/* Android's C library has the BSD funopen instead of fopencookie */
+static int android_read(void *cookie, char *out, int length)
+{
+	return (int)stream_read(cookie, out, (size_t)length);
+}
+
+static fpos_t android_seek(void *cookie, fpos_t offset, int whence)
+{
+	pack_off_t target = offset;
+	return stream_seek(cookie, &target, whence) == 0 ? (fpos_t)target : -1;
+}
+#endif
+
 FILE *vn_fopen(const char *path, const char *mode)
 {
 	if (mode[0] == 'r' && strchr(mode, '+') == NULL) {
@@ -188,8 +202,12 @@ FILE *vn_fopen(const char *path, const char *mode)
 			s->base = e->data;
 			s->size = e->size;
 			s->pos = 0;
+#ifdef __ANDROID__
+			FILE *f = funopen(s, android_read, NULL, android_seek, stream_close);
+#else
 			cookie_io_functions_t io = {stream_read, NULL, stream_seek, stream_close};
 			FILE *f = fopencookie(s, "rb", io);
+#endif
 			if (f == NULL) {
 				free(s);
 				return NULL;

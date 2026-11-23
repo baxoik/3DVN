@@ -12,6 +12,9 @@
 #ifndef SDL_COMPAT_H
 #define SDL_COMPAT_H
 
+#ifdef __ANDROID__
+#include <SDL_main.h>   /* the engine's main() becomes SDL_main, which SDL's activity calls */
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

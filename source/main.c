@@ -1910,8 +1910,9 @@ static int load_slot(int slot)
 		problem = "save file is damaged";
 	}
 	if (!problem && config.num[NUM_NVL_ACCUMULATE] && data->event.type == GS_EV_SAY) {
-		char prefix[GS_NAME_LEN + 3] = "";
-		if (data->event.speaker[0]) snprintf(prefix, sizeof(prefix), "%s: ", data->event.speaker);
+		char prefix[GS_NAME_LEN + 3] = "";   /* as the page was written (nvl_names) */
+		if (data->event.speaker[0] && config.num[NUM_NVL_NAMES])
+			snprintf(prefix, sizeof(prefix), "%s: ", data->event.speaker);
 		size_t prefix_len = strlen(prefix), text_len = strlen(data->event.text);
 		if (!has_page) {
 			if (nvl_page_append_dialogue(&loaded_page, prefix, prefix_len, data->event.text, text_len) != NVL_PAGE_OK)
@@ -2908,7 +2909,8 @@ static void draw_nvl_page(float x, float y, float width, float height, float sca
 	size_t length = nvl_page.length;
 	int complete = 0;
 	if (waiting == PLAY_TEXT) {
-		size_t prefix = event.speaker[0] ? strlen(event.speaker) + 2 : 0;
+		/* "Name: " is on the page only when the game shows names there (nvl_names) */
+		size_t prefix = event.speaker[0] && config.num[NUM_NVL_NAMES] ? strlen(event.speaker) + 2 : 0;
 		size_t visible = utf8_prefix(event.text, (size_t)chars_shown);
 		size_t end = nvl_page.current_event_offset + prefix + visible;
 		if (end <= length) length = end;
@@ -2922,9 +2924,11 @@ static void draw_nvl_page(float x, float y, float width, float height, float sca
 	float previous_scale = measure_scale;
 	measure_scale = scale;
 	int count = wrap_text_lines(shown, width, measure_text, NULL, starts, ends, NVL_PAGE_MAX_BYTES + 1);
-	while (count > 0 && starts[count - 1] >= length && length > 0) --count;
+	/* only the lines (or parts) revealed so far; nothing at all at the very start of a page */
+	while (count > 0 && starts[count - 1] >= length) --count;
 	for (int i = 0; i < count; ++i) {
 		if (ends[i] > length) ends[i] = (unsigned short)length;
+		if (ends[i] < starts[i]) ends[i] = starts[i];
 	}
 	shown[length] = '\0';
 	C2D_Text metric;
@@ -5367,11 +5371,13 @@ static void continue_local(void)
 {
 	free(continue_remote);
 	continue_remote = NULL;
+	notice[0] = '\0';
 	if (resume_exists() && load_slot(RESUME_SLOT)) {
 		mode = MODE_PLAY;
 		return;
 	}
-	snprintf(notice, sizeof(notice), resume_exists() ? "Could not continue" : "Nothing to continue yet");
+	if (notice[0] == '\0')   /* load_slot says why when it can */
+		snprintf(notice, sizeof(notice), resume_exists() ? "Could not continue" : "Nothing to continue yet");
 	build_title_items();
 }
 
@@ -6625,6 +6631,7 @@ int main(int argc, char **argv)
 	playtime_save();   /* the app is closing (START / exit menu): keep the last minutes */
 	read_save();
 	gs_free(program);
+	program = NULL;
 	clear_cache();
 	audio_exit();
 	C2D_TextBufDelete(measure_buf);
@@ -6635,5 +6642,10 @@ int main(int argc, char **argv)
 	C3D_Fini();
 	cfguExit();
 	gfxExit();
+#ifdef __ANDROID__
+	/* Android keeps the process after the activity closes and would run main() again with
+	   this run's globals still set: end it, so the next start is a fresh one. */
+	exit(0);
+#endif
 	return 0;
 }

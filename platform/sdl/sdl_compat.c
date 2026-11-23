@@ -2,6 +2,9 @@
 #include "sdl_compat.h"
 
 #include <SDL.h>
+#ifdef __ANDROID__
+#include <unistd.h>
+#endif
 #include <SDL_ttf.h>
 #include <math.h>
 #include <stdarg.h>
@@ -125,6 +128,17 @@ static void boot_log(const char *format, ...)
 
 void gfxInitDefault(void)
 {
+#ifdef __ANDROID__
+	/* games, saves and settings under the app's files folder (ROOT_DIR is relative), which
+	   a PC reaches over USB at Android/data/<app>/files; Back stays with the app (menu / back) */
+	const char *files = SDL_AndroidGetExternalStoragePath();
+	if (files == NULL || chdir(files) != 0) {
+		files = SDL_AndroidGetInternalStoragePath();
+		if (files != NULL) chdir(files);
+	}
+	SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+	SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
 	boot_log("3DVN SDL start, root %s", ROOT_DIR);
 	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
@@ -174,6 +188,10 @@ void gfxInitDefault(void)
 		TOP_SCALE = BOTTOM_SCALE = (float)atof(scale);
 	}
 	desktop = getenv("VN_DESKTOP") != NULL || (getenv("VN_DUAL") == NULL && getenv("VN_SCRIPT") == NULL);
+#ifdef __ANDROID__
+	desktop = 1;   /* phones and tablets: the single-screen layout, full screen */
+	SDL_DisableScreenSaver();   /* keep the screen on while reading */
+#endif
 	int top_logical = getenv("VN_WIDE") != NULL || desktop ? 427 : TOP_W;   /* wide layout (as on a TV) */
 	int width = (int)(top_logical * TOP_SCALE), height = (int)((TOP_H + BOTTOM_H) * TOP_SCALE);
 	Uint32 window_flags = 0;
@@ -181,6 +199,9 @@ void gfxInitDefault(void)
 		/* one window, 16:9, sized to the screen; render sharply for the screen's height */
 		SDL_DisplayMode mode;
 		int screen_h = SDL_GetDesktopDisplayMode(0, &mode) == 0 ? mode.h : 1080;
+#ifdef __ANDROID__
+		if (mode.w < screen_h) screen_h = mode.w;   /* landscape: the short side */
+#endif
 		if (getenv("VN_SCALE") == NULL) {
 			TOP_SCALE = (float)screen_h / TOP_H;
 			BOTTOM_SCALE = TOP_SCALE * 0.75f;
@@ -189,6 +210,9 @@ void gfxInitDefault(void)
 		width = height * 16 / 9;
 		window_flags = SDL_WINDOW_RESIZABLE;
 		fullscreen = getenv("VN_FULLSCREEN") != NULL;
+#ifdef __ANDROID__
+		fullscreen = 1;
+#endif
 		if (fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 	}
 	outputs[0].window = SDL_CreateWindow("3DVN", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -426,7 +450,8 @@ C2D_Font C2D_FontLoadSystem(CFG_Region region)
 	const char *candidates[] = {getenv("VN_FONT"), "font.ttf",
 		"/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf", "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
 		"/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-		"/usr/share/fonts/TTF/DejaVuSans.ttf", "C:/Windows/Fonts/segoeui.ttf"};
+		"/usr/share/fonts/TTF/DejaVuSans.ttf", "C:/Windows/Fonts/segoeui.ttf",
+		"/system/fonts/Roboto-Regular.ttf", "/system/fonts/NotoSans-Regular.ttf", "/system/fonts/DroidSans.ttf"};
 	for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
 		if (candidates[i] == NULL) continue;
 		C2D_Font font = C2D_FontLoad(candidates[i]);
@@ -1295,26 +1320,44 @@ static int desktop_event(const SDL_Event *e)
 
 void (*vn_background_hook)(void);
 
+/* A tap whose press and release arrive in the same frame (quick taps on a phone) is still
+   seen: the release waits one frame. */
+static int touch_pressed_now, touch_release_later;
+
 bool aptMainLoop(void)
 {
 	SDL_Event e;
+	if (touch_release_later) {
+		touch_held = 0;
+		touch_release_later = 0;
+	}
+	touch_pressed_now = 0;
 	while (SDL_PollEvent(&e)) {
 		if (e.type == SDL_QUIT) running = 0;
 		/* Wii U HOME (and phones): the app goes to the background */
 		if (e.type == SDL_APP_WILLENTERBACKGROUND && vn_background_hook != NULL) vn_background_hook();
+#ifdef __ANDROID__
+		if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_AC_BACK && !e.key.repeat) {
+			mouse_keys |= overlay_visible ? KEY_B : KEY_X;   /* Back: the menu, or back out of it */
+			continue;
+		}
+#endif
 		if (desktop && desktop_event(&e)) continue;
 		if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
 			touch_held = to_bottom(output_of_window(e.button.windowID), (float)e.button.x, (float)e.button.y, &touch_pos);
+			touch_pressed_now = touch_held;
 		} else if (e.type == SDL_MOUSEMOTION && touch_held) {
 			to_bottom(output_of_window(e.motion.windowID), (float)e.motion.x, (float)e.motion.y, &touch_pos);
 		} else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
-			touch_held = 0;
-		} else if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION) {
+			if (touch_pressed_now) touch_release_later = 1;   /* let this frame see the tap */
+			else touch_held = 0;
+		} else if (!desktop && (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION)) {
+			/* (single-screen layout, phones: touches arrive as mouse clicks, handled above) */
 			/* Wii U GamePad touchscreen: the GamePad window is output 1. */
 			int output = output_count > 1 ? 1 : 0;
 			touch_held = to_bottom(output, e.tfinger.x * outputs[output].width,
 				e.tfinger.y * outputs[output].height, &touch_pos);
-		} else if (e.type == SDL_FINGERUP) {
+		} else if (!desktop && e.type == SDL_FINGERUP) {
 			touch_held = 0;
 		} else if (e.type == SDL_CONTROLLERDEVICEADDED) {
 			SDL_GameControllerOpen(e.cdevice.which);
