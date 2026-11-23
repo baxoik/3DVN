@@ -28,9 +28,21 @@ The app keeps everything in its own folder, which a PC sees over USB:
 With adb: `adb push games/mygame /sdcard/Android/data/io.github.davidgith1.threedvn/files/3dvn/games/`.
 Start the app once first, so the folder exists.
 
+## Layouts
+
+Turn the phone to change the layout (it follows the phone's auto-rotate setting):
+
+- **sideways**: one screen, the picture filling the display; the touch-screen menus appear
+  over it when needed;
+- **upright**: the two screens stacked, as on a 3DS: the story on top, the touch screen with
+  its buttons (Menu, Backlog, Save, Load, Hide text, Auto, Quit) below.
+
+The game carries on where it is when the phone is turned.
+
 ## Controls
 
-- Tap the picture: next line (A). Taps on the menus work as on the 3DS touch screen.
+- Tap the picture (upright: the top screen): next line (A). Taps on the menus and on the
+  lower screen work as on the 3DS touch screen.
 - Back: the menu (Save, Load, Backlog, Sync Saves, Options, Quit), or back out of it.
 - Leaving the app (Home, switching apps) saves where you are; Continue on the title
   brings you back.

@@ -45,6 +45,7 @@ void threadFree(Thread thread);
 /* ---------- system ---------- */
 bool aptMainLoop(void);
 extern void (*vn_background_hook)(void);   /* called when the app goes to the background */
+int vn_layout_changed(void);   /* Android: 1 once after the phone was turned (layout changed) */
 
 /* Diagnostics in <ROOT_DIR>/boot.log: what the app was doing (shown with slow frames),
    and free-form lines (e.g. slow file loads). */

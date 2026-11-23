@@ -56,6 +56,7 @@ struct C3D_RenderTarget {
 static Output outputs[2];
 /* PC desktop mode (see sdl_compat.h) */
 static int desktop, overlay_visible, fullscreen;
+static int layout_changed;   /* Android: the phone was turned (one screen <-> two stacked) */
 static u32 mouse_keys;            /* buttons the mouse pressed this frame (one-frame pulses) */
 static Uint32 last_mouse_move;
 static int output_count;
@@ -94,6 +95,20 @@ static void place_targets(void)
 			? (SDL_Rect){(out->width - ow) / 2, (out->height - oh) / 2, ow, oh} : (SDL_Rect){0, 0, 0, 0};
 		return;
 	}
+#ifdef __ANDROID__
+	{   /* phone held upright: the two screens stacked, as large as the window allows */
+		Output *out = &outputs[0];
+		SDL_GetRendererOutputSize(out->renderer, &out->width, &out->height);
+		float lw = (float)targets[GFX_TOP].logical_w, lh = (float)(TOP_H + BOTTOM_H);
+		float fit = fminf(out->width / lw, out->height / lh);
+		int tw = (int)(lw * fit), th = (int)(TOP_H * fit);
+		int bw = (int)(BOTTOM_W * fit), bh = (int)(BOTTOM_H * fit);
+		int y0 = (out->height - th - bh) / 2;
+		targets[GFX_TOP].place = (SDL_Rect){(out->width - tw) / 2, y0, tw, th};
+		targets[GFX_BOTTOM].place = (SDL_Rect){(out->width - bw) / 2, y0 + th, bw, bh};
+		return;
+	}
+#endif
 	int top_w = (int)(targets[GFX_TOP].logical_w * TOP_SCALE), top_h = (int)(TOP_H * TOP_SCALE);
 	int bottom_w = (int)(BOTTOM_W * BOTTOM_SCALE), bottom_h = (int)(BOTTOM_H * BOTTOM_SCALE);
 	targets[GFX_TOP].place = (SDL_Rect){0, 0, top_w, top_h};
@@ -137,7 +152,7 @@ void gfxInitDefault(void)
 		if (files != NULL) chdir(files);
 	}
 	SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
-	SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+	SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight Portrait");
 #endif
 	boot_log("3DVN SDL start, root %s", ROOT_DIR);
 	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
@@ -995,6 +1010,9 @@ void C3D_FrameEnd(u8 flags)
 			}
 			continue;
 		}
+#ifdef __ANDROID__
+		place_targets();
+#endif
 		for (int i = 0; i < 2; ++i) {
 			if (targets[i].output == o) SDL_RenderCopy(r, targets[i].texture, NULL, &targets[i].place);
 		}
@@ -1276,6 +1294,13 @@ int vn_desktop_mode(void)
 	return desktop;
 }
 
+int vn_layout_changed(void)
+{
+	int changed = layout_changed;
+	layout_changed = 0;
+	return changed;
+}
+
 void vn_desktop_overlay(int visible)
 {
 	overlay_visible = visible;
@@ -1323,6 +1348,13 @@ void (*vn_background_hook)(void);
 /* A tap whose press and release arrive in the same frame (quick taps on a phone) is still
    seen: the release waits one frame. */
 static int touch_pressed_now, touch_release_later;
+/* Finger events are the Wii U GamePad's touches; Android also turns every touch into a
+   mouse click (handled above), so there they would count each touch twice. */
+#ifdef __ANDROID__
+#define finger_input 0
+#else
+#define finger_input (!desktop)
+#endif
 
 bool aptMainLoop(void)
 {
@@ -1332,6 +1364,18 @@ bool aptMainLoop(void)
 		touch_release_later = 0;
 	}
 	touch_pressed_now = 0;
+#ifdef __ANDROID__
+	{   /* upright: two screens stacked (as on a 3DS); sideways: one screen */
+		int w = 0, h = 0;
+		SDL_GetRendererOutputSize(outputs[0].renderer, &w, &h);
+		int want_desktop = !(h > w);
+		if (w > 0 && h > 0 && want_desktop != desktop) {
+			desktop = want_desktop;
+			touch_held = 0;
+			layout_changed = 1;
+		}
+	}
+#endif
 	while (SDL_PollEvent(&e)) {
 		if (e.type == SDL_QUIT) running = 0;
 		/* Wii U HOME (and phones): the app goes to the background */
@@ -1346,18 +1390,21 @@ bool aptMainLoop(void)
 		if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
 			touch_held = to_bottom(output_of_window(e.button.windowID), (float)e.button.x, (float)e.button.y, &touch_pos);
 			touch_pressed_now = touch_held;
+#ifdef __ANDROID__
+			if (!touch_held) mouse_keys |= KEY_A;   /* two screens: a tap on the top one = next line */
+#endif
 		} else if (e.type == SDL_MOUSEMOTION && touch_held) {
 			to_bottom(output_of_window(e.motion.windowID), (float)e.motion.x, (float)e.motion.y, &touch_pos);
 		} else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
 			if (touch_pressed_now) touch_release_later = 1;   /* let this frame see the tap */
 			else touch_held = 0;
-		} else if (!desktop && (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION)) {
-			/* (single-screen layout, phones: touches arrive as mouse clicks, handled above) */
+		} else if (finger_input && (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION)) {
+			/* (phones and the single-screen layout: touches arrive as mouse clicks, above) */
 			/* Wii U GamePad touchscreen: the GamePad window is output 1. */
 			int output = output_count > 1 ? 1 : 0;
 			touch_held = to_bottom(output, e.tfinger.x * outputs[output].width,
 				e.tfinger.y * outputs[output].height, &touch_pos);
-		} else if (!desktop && e.type == SDL_FINGERUP) {
+		} else if (finger_input && e.type == SDL_FINGERUP) {
 			touch_held = 0;
 		} else if (e.type == SDL_CONTROLLERDEVICEADDED) {
 			SDL_GameControllerOpen(e.cdevice.which);

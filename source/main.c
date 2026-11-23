@@ -1492,7 +1492,11 @@ static void apply_screen_options(void)
 #ifdef __WIIU__
 	top_w = (float)vn_wiiu_set_tv_wide(display_options.tv_wide);
 #elif defined(VN_SDL)
+#ifdef __ANDROID__
+	top_w = 427.0f;   /* phones: the wide top screen in both layouts */
+#else
 	top_w = getenv("VN_WIDE") != NULL || vn_desktop_mode() ? 427.0f : 400.0f;   /* wide layout */
+#endif
 	off_tv = vn_desktop_mode();   /* one screen: dialogue and choices stay on the main screen */
 #endif
 }
@@ -3709,6 +3713,8 @@ static void draw_title_menu(void)
    while playing (the touch buttons are not on screen), except in the Guide, which is
    shown on the GamePad as usual. */
 #define OFF_TV 1
+#elif defined(__ANDROID__)
+#define START_HINT "Back: menu"
 #else
 #define START_HINT "START exit app"
 #endif
@@ -5760,9 +5766,17 @@ static void draw_bottom(C3D_RenderTarget *target)
 	for (int index = 0; index < button_count; ++index) {
 		draw_button_box(&buttons[index], index == PLAY_AUTO_BUTTON && auto_mode);
 	}
+#ifdef __ANDROID__
+	draw_line(waiting == PLAY_MENU ? "Tap a choice" : "Tap the top screen: next line",
+#else
 	draw_line(waiting == PLAY_MENU ? "D-pad choose   A confirm" : "A next   Y auto   Hold R fast-forward",
+#endif
 		14, 180, 0.42f, dim, Z_TEXT, 0.0f);
+#ifdef __ANDROID__
+	draw_line(ui_hidden ? "Text hidden - tap to show it" : START_HINT, 14, 194, 0.42f, dim, Z_TEXT, 0.0f);
+#else
 	draw_line(ui_hidden ? "Text hidden - press B or A" : START_HINT, 14, 194, 0.42f, dim, Z_TEXT, 0.0f);
+#endif
 	if (notice[0] != '\0') {   /* over the playtime line */
 		rect(0, 206, BOTTOM_W, 18, config.has_bg ? rgb_color(config.bg, 255) : C2D_Color32(17, 29, 34, 255), Z_TEXT + 0.01f);
 		draw_line(notice, 14, 208, 0.42f, C2D_Color32(255, 200, 120, 255), Z_TEXT + 0.02f, BOTTOM_W - 28);
@@ -6590,6 +6604,9 @@ int main(int argc, char **argv)
 		/* PC desktop mode: the bottom (touch) screen shows as an overlay only when needed */
 		vn_desktop_overlay(mode != MODE_PLAY || panel != PANEL_NONE
 			|| (waiting == PLAY_MENU && event.choice_count > 0 && !ui_hidden));
+#endif
+#ifdef __ANDROID__
+		if (vn_layout_changed()) apply_screen_options();   /* the phone was turned */
 #endif
 		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 #ifdef OFF_TV
