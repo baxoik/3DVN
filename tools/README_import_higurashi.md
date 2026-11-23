@@ -22,7 +22,10 @@ Options:
 
 | Option | Meaning |
 | --- | --- |
-| `--alt-art` | Use the alternative character art (`CGAlt`, the slimmer style drawn at 1280x960) instead of the default sprites. |
+| `--art console\|remake\|original` | Art set. `console` is the game's default (with 07th-Mod's full patch: the PS3 art); `remake` the alternative sprites (`CGAlt`); `original` 07th-Mod's Ryukishi07 art. `--alt-art` = `--art remake`. |
+| `--adv` | 07th-Mod full patch: one line at a time in a text box with the speaker's name (in their colour), instead of full pages. |
+| `--audio mangagamer\|gin\|houplus` | 07th-Mod music and sound set (default `mangagamer`). |
+| `--censor N` | 07th-Mod censorship level 0-5 (default 2, the mod's default). |
 | `--no-tips` | Leave out the TIPS. |
 | `--no-hd` | Don't keep the full-size pictures in `hd/` (3DS only). |
 | `--title T` | Game title (default "Higurashi - <arc>"). |
@@ -67,8 +70,25 @@ is) and convert the copy:
 Onikakushi voiced is about 310 MB (5,000 voice clips). The voices play like
 3DVN voice clips: in the backlog, and auto mode waits for them.
 
-The newer full 07th-Mod patch (PS3 sprites and backgrounds, ADV mode) is not
-supported yet: its scripts use the mod's own commands.
+## 07th-Mod full patch (PS3 art, voices, ADV mode)
+
+The full voice and graphics patch converts too. The 07th-Mod installer
+(github.com/07th-mod/python-patcher) lists its parts in `installData.json`;
+for Onikakushi, extract into a copy of the game, in this order:
+
+1. `onikakushi-base.7z` (1.35 GB: voices, PS3 backgrounds and sprites)
+2. `MangaGamer-Question-BGM-SE-Restore.7z` (music and sound sets)
+3. `Onikakushi-UI_5.2.2f1_unix.7z` (not used by the converter)
+4. optionally `hou-ogsprites-ep01.7z` (Ryukishi07 sprites for `--art original`)
+5. `Onikakushi.Voice.and.Graphics.Patch.zip` from github.com/07th-mod/onikakushi
+   (the scripts, last)
+
+The mod's settings are decided when converting (`--adv`, `--art`, `--audio`,
+`--censor`): its ADV/NVL switches, censorship branches and called script
+sections are resolved then. The 16:9 PS3 art becomes 400x225 on the 3DS, with
+the full-size art in `hd/` (at most 2048 pixels wide) for PC, Wii U and
+Android. Onikakushi: about 430 MB, 5,000 voices. Lip sync, sliding sprites
+(MoveBustshot) and the colour filters (night/sunset tints) are not converted.
 
 ## Checking
 

@@ -24,7 +24,14 @@ except ImportError:
     Image = None
 
 SCREEN_W, SCREEN_H = 400, 240
-CANVAS_W, CANVAS_H = 640, 480           # the game's coordinate space
+CANVAS_H = 480                          # the game's coordinate space is 480 high: 640 wide
+                                        # (4:3), or 853 with 07th-Mod's 16:9 screen
+# 07th-Mod art and audio sets: folders searched in order (as in its init.txt)
+ART_SETS = {"console": ["CG"], "remake": ["CGAlt", "CG"],
+            "original": ["OGBackgrounds", "OGSprites", "CG"]}
+AUDIO_SETS = {"mangagamer": (["April2019BGM", "BGM"], ["SE"]),
+              "gin": (["OGBGM", "BGM"], ["OGSE", "SE"]),
+              "houplus": (["HouPlusBGM", "BGM"], ["OGSE", "SE"])}
 PAGE_CHARS = 420                        # start a new NVL page before it overflows a 3DS screen
 ARCS = {"onik": "Onikakushi", "wata": "Watanagashi", "tata": "Tatarigoroshi",
         "hima": "Himatsubushi", "meak": "Meakashi", "tsum": "Tsumihoroboshi",
@@ -88,29 +95,59 @@ def parse_functions(text):
     return funcs
 
 
+def branch(toks, j):
+    """the statement or { block } at j -> (statements, index after it)"""
+    if toks[j] == "{":
+        d, k = 1, j + 1
+        while d:
+            d += toks[k] == "{"
+            d -= toks[k] == "}"
+            k += 1
+        return statements(toks[j + 1:k - 1]), k
+    if toks[j] == "if":   # "else if": exactly one if statement
+        k = _end_of_if(toks, j)
+        return statements(toks[j:k]), k
+    k = j
+    depth = 0
+    while k < len(toks) and not (toks[k] == ";" and depth == 0):
+        depth += toks[k] == "("
+        depth -= toks[k] == ")"
+        k += 1
+    return statements(toks[j:k + 1]), k + 1
+
+
+def _end_of_if(toks, j):
+    depth, k = 0, j + 1
+    while True:
+        depth += toks[k] == "("
+        depth -= toks[k] == ")"
+        k += 1
+        if depth == 0:
+            break
+    _, k = branch(toks, k)
+    if k < len(toks) and toks[k] == "else":
+        _, k = branch(toks, k + 1)
+    return k
+
+
 def statements(toks):
     out, i = [], 0
     while i < len(toks):
         t = toks[i]
         if t == "if":
-            depth, j = 0, i + 1     # skip "( ... )" and the following statement/block
+            depth, j = 0, i + 1     # the condition "( ... )"
             while True:
                 depth += toks[j] == "("
                 depth -= toks[j] == ")"
                 j += 1
                 if depth == 0:
                     break
-            if j < len(toks) and toks[j] == "{":
-                d, j = 1, j + 1
-                while d:
-                    d += toks[j] == "{"
-                    d -= toks[j] == "}"
-                    j += 1
-            else:
-                while toks[j] != ";":
-                    j += 1
-                j += 1
-            out.append(("if",))
+            cond = toks[i + 2:j - 1]
+            then, j = branch(toks, j)
+            other = []
+            if j < len(toks) and toks[j] == "else":
+                other, j = branch(toks, j + 1)
+            out.append(("if", cond, then, other))
             i = j
         elif re.fullmatch(r"[A-Za-z_]\w*", t) and i + 1 < len(toks) and toks[i + 1] == "(":
             depth, j, args, cur = 0, i + 1, [], []
@@ -231,11 +268,27 @@ class Converter:
             sys.exit(f"no *_Data/StreamingAssets folder in {a.src}")
         self.data = data[0]
         self.sa = os.path.join(self.data, "StreamingAssets")
-        self.cg = os.path.join(self.sa, "CGAlt" if a.alt_art else "CG")
-        self.cg_base = os.path.join(self.sa, "CG")
-        self.used = {"bg": set(), "sprites": set(), "audio": set()}
+        art = "remake" if a.alt_art else a.art
+        self.art = [os.path.join(self.sa, f) for f in ART_SETS[art]]
+        bgm, se = AUDIO_SETS[a.audio]
+        self.bgm = [os.path.join(self.sa, f) for f in bgm]
+        self.se = [os.path.join(self.sa, f) for f in se]
+        self.voice = [os.path.join(self.sa, "voice"), os.path.join(self.sa, "SE")]
+        self.used = {"bg": {}, "sprites": {}, "audio": set()}
         self.indexes = {}
         self.sources = {}     # converted audio name -> source file
+        self.parsed = {}
+        self.chars = {}       # character id -> (name, colour)
+        # settings the scripts test (07th-Mod), decided at conversion time
+        self.flags = {"GADVMode": 1 if a.adv else 0, "GCensor": a.censor, "GHideCG": 0,
+                      "GLipSync": 0, "GArtStyle": 0}
+        init = "".join(open(p, encoding="utf-8-sig", errors="replace").read()
+                       for p in (self.script_path("init"),) if p)
+        wide = re.search(r'SetScreenAspect\(\s*"0\.5625"', init) is not None
+        self.canvas_w = CANVAS_H * 16 / 9 if wide else 640
+        self.scale = min(SCREEN_W / self.canvas_w, SCREEN_H / CANVAS_H)
+        self.xoff = (SCREEN_W - self.canvas_w * self.scale) / 2
+        self.yoff = (SCREEN_H - CANVAS_H * self.scale) / 2
 
     # ---- files ----
     def script_path(self, name):
@@ -256,54 +309,94 @@ class Converter:
             self.indexes[folder] = found
         return self.indexes[folder]
 
-    def picture(self, name):
-        for folder in (self.cg, self.cg_base):
-            path = self.index(folder).get(name.lower() + ".png")
-            if path:
-                return path
-        return None
+    def find(self, folders, name, ext):
+        """name (may have subfolders, any case) in the first folder that has it ->
+        (real path, real name relative to that folder without extension), or (None, None)"""
+        parts = name.replace("\\", "/").split("/")
+        for folder in folders:
+            current, real = folder, []
+            for i, part in enumerate(parts):
+                found = self.index(current).get(part.lower() + (ext if i == len(parts) - 1 else ""))
+                if not found:
+                    break
+                real.append(os.path.basename(found))
+                current = found
+            else:
+                return current, "/".join(real[:-1] + [os.path.splitext(real[-1])[0]])
+        return None, None
 
-    def picture_name(self, name):
-        """the real file name (without .png), used for the converted file and in scripts"""
-        return os.path.splitext(os.path.basename(self.picture(name)))[0]
+    def picture(self, name):
+        return self.find(self.art, name, ".png")
+
+    @staticmethod
+    def factor(w, h):
+        """pixels per game unit (the game is 480 units high): the art comes as 640x480
+        originals, 1280x960 remakes, 1920x1080 PS3 backgrounds and 2560x1440 PS3 sprites"""
+        if h == 1440:
+            return 3.0
+        if h in (1080, 2160) or w in (1920, 2880):
+            return 1080 / CANVAS_H
+        if (w, h) == (1280, 960):
+            return 2.0
+        return 1.0
 
     def logical_size(self, path):
-        """Picture size in the game's 640x480 coordinates (the alternative art is drawn
-        at double resolution)."""
         with Image.open(path) as image:
             w, h = image.size
-        if os.path.dirname(path) == self.cg and self.a.alt_art and w >= 1280:
-            return w / 2, h / 2
-        return w, h
+        f = self.factor(w, h)
+        return w / f, h / f
 
-    def sound(self, folder, name):
-        """"se/s19/00/992700001" for StreamingAssets/<folder>/<name>.ogg, where name may
-        have subfolders (07th-Mod voices) and any letter case; None if there is none"""
-        current, parts = self.sa, [folder] + name.replace("\\", "/").split("/")
-        real = []
-        for i, part in enumerate(parts):
-            want = part.lower() + (".ogg" if i == len(parts) - 1 else "")
-            found = self.index(current).get(want)
-            if not found:
-                return None
-            real.append(os.path.basename(found))
-            current = found
-        converted = "/".join([real[0].lower()] + real[1:-1] + [os.path.splitext(real[-1])[0]])
-        self.sources[converted] = current
+    def sound(self, folders, name, prefix):
+        path, real = self.find(folders, name, ".ogg")
+        if not path:
+            return None
+        converted = prefix + "/" + real
+        self.sources[converted] = path
         return converted
+
+    def condition(self, cond, where):
+        """a script condition from the settings: GetGlobalFlag(X) [op N] [&& ...]"""
+        text = " ".join(cond)
+        text = re.sub(r"GetGlobalFlag\s*\(\s*(\w+)\s*\)",
+                      lambda m: str(self.flags.get(m.group(1), 0)), text)
+        text = re.sub(r"([<>=!])\s+=", r"\1=", text)
+        text = text.replace("&&", " and ").replace("||", " or ").replace("TRUE", "1").replace("FALSE", "0")
+        text = re.sub(r"!(?!=)", " not ", text)
+        if not re.fullmatch(r"[\d\s()<>=!andortn]*", text):
+            warn("condition not understood (taken as false)", f"{where}: {' '.join(cond)}")
+            return False
+        try:
+            return bool(eval(text, {"__builtins__": {}}))
+        except Exception:
+            warn("condition not understood (taken as false)", f"{where}: {' '.join(cond)}")
+            return False
+
+    def functions(self, name):
+        if name not in self.parsed:
+            path = self.script_path(name)
+            self.parsed[name] = parse_functions(open(path, encoding="utf-8-sig", errors="replace").read()) if path else {}
+        return self.parsed[name]
+
+    def run_block(self, stmts, out, where, depth=0):
+        for st in stmts:
+            if st[0] == "if":
+                self.run_block(st[2] if self.condition(st[1], where) else st[3], out, where, depth)
+            elif st[1] == "ModCallScriptSection" and depth < 8:
+                file, section = st[2][0], st[2][1]
+                body = self.functions(file).get(section)
+                if body is None:
+                    warn("missing script section", f"{file} {section}")
+                else:
+                    self.run_block(body, out, f"{file}:{section}", depth + 1)
+            else:
+                self.statement(st[1], st[2], out, where)
 
     # ---- one script file -> one chapter ----
     def convert(self, name):
-        path = self.script_path(name)
-        funcs = parse_functions(open(path, encoding="utf-8-sig", errors="replace").read())
-        out = [f"# converted from {name}.txt"]
-        self.text, self.page = "", 0
+        out = [f"# converted from {name}.txt", "include characters.3vs"]
+        self.text, self.page, self.speaker = "", 0, None
         self.music_channel = None
-        for st in funcs.get("main", []):
-            if st[0] != "call":
-                warn("if statement in a story script skipped", name)
-                continue
-            self.statement(st[1], st[2], out, name)
+        self.run_block(self.functions(name).get("main", []), out, name)
         self.flush(out)
         out.append("script ch/flow")   # back to the order of play
         return out
@@ -313,6 +406,11 @@ class Converter:
         if not text.strip():
             return   # only line breaks so far: keep them for the next text
         self.text = ""
+        if self.a.adv:   # one line at a time, with the speaker's name
+            text = text.strip("\n")
+            speaker, self.speaker = self.speaker, None
+            out.append(f"{speaker}: {quote(text)}" if speaker else quote(text))
+            return
         if self.page and self.page + len(text) > PAGE_CHARS:
             out.append("page")
             self.page = 0
@@ -320,26 +418,38 @@ class Converter:
         self.page += len(text)
         out.append(quote(text))
 
+    def character(self, name):
+        """an ADV speaker "<color=#5ec69a>Mion</color>" -> its 3DVN character id"""
+        colour = re.search(r"#([0-9a-fA-F]{6})", name)
+        plain = re.sub(r"<[^>]*>", "", name).strip()
+        cid = "c_" + ident(plain.lower())[:28]
+        self.chars.setdefault(cid, (plain, "#" + colour.group(1).lower() if colour else ""))
+        return cid
+
     def statement(self, cmd, args, out, where):
         a = self.a
         ms = lambda v: f"{max(0, v) / 1000:.2f}" if isinstance(v, int) else "0"
         if cmd == "OutputLine":
             # (Japanese name, Japanese text, English name, English text, mode)
             name, text, mode = args[2], args[3], args[4] if len(args) > 4 else ""
+            text = text if isinstance(text, str) and text != "NULL" else ""
             if isinstance(name, str) and name not in ("NULL", ""):
+                if not text:   # 07th-Mod ADV: the name first, then the line
+                    self.speaker = self.character(name)
+                    return
                 text = re.sub(r"<[^>]*>", "", name) + ": " + text
-            self.text += text if isinstance(text, str) else ""
-            if mode in ("Line_WaitForInput", "Line_Normal"):
+            self.text += text
+            if mode != "Line_ContinueAfterTyping":
                 self.flush(out)
         elif cmd == "OutputLineAll":
             text, mode = args[1], args[2] if len(args) > 2 else ""
-            self.text += text if isinstance(text, str) else ""
-            if mode in ("Line_WaitForInput", "Line_Normal"):
+            self.text += text if isinstance(text, str) and text != "NULL" else ""
+            if mode != "Line_ContinueAfterTyping":
                 self.flush(out)
         elif cmd == "ClearMessage":
             self.flush(out)
             self.text = ""   # line breaks left at the end of a page are not needed
-            if self.page:
+            if self.page and not self.a.adv:
                 out.append("page")
                 self.page = 0
         elif cmd == "FadeBG":   # fade the background out
@@ -348,38 +458,47 @@ class Converter:
         elif cmd in ("DrawScene", "DrawSceneWithMask", "DrawBG", "ChangeScene"):
             self.flush(out)
             pic = args[0]
-            path = self.picture(pic) if pic not in ("black", "white") or self.picture(pic) else None
+            path, real = self.picture(pic)
             seconds = (args[-1] if cmd == "DrawSceneWithMask" else args[2] if cmd == "ChangeScene"
                        else args[1] if len(args) > 1 else 0)
             fade = f" fade {ms(seconds)}" if isinstance(seconds, int) and seconds > 0 else ""
             if cmd != "DrawBG":
                 out.append("hide *")       # a new scene clears the characters
             if path:
-                pic = self.picture_name(pic)
-                self.used["bg"].add(pic)
-                out.append(f"bg {pic}{fade}")
+                self.used["bg"][real] = path
+                out.append(f"bg {real}{fade}")
             elif pic in ("black", "white"):
                 out.append(f"bg {pic}{fade}")
             else:
                 warn("missing picture", f"{where}: {pic}")
-        elif cmd in ("DrawBustshot", "DrawBustshotWithFiltering"):
+        elif cmd in ("DrawBustshot", "DrawBustshotWithFiltering", "ModDrawCharacter",
+                     "ModDrawCharacterWithFiltering"):
             self.flush(out)
-            filtering = cmd == "DrawBustshotWithFiltering"
-            layer, pic = args[0], args[1]
-            x, y = (args[4], args[5]) if filtering else (args[2], args[3])
+            if cmd.startswith("Mod"):
+                # (layer, character, "sprite/name_", "mouth frame", [mask, style,] x, y, ...)
+                layer, pic = args[0], f"{args[2]}{args[3]}"
+                x, y = (args[6], args[7]) if cmd.endswith("Filtering") else (args[4], args[5])
+                path, real = self.picture(pic)
+                if not path:
+                    path, real = self.picture(f"{args[2]}0")
+            else:
+                layer, pic = args[0], args[1]
+                if pic in ("", "NULL"):   # an empty picture clears the layer
+                    out.append(f"hide L{layer}")
+                    return
+                x, y = (args[4], args[5]) if cmd.endswith("Filtering") else (args[2], args[3])
+                path, real = self.picture(pic)
             seconds = args[-2] if len(args) >= 2 else 0
-            path = self.picture(pic)
             if not path:
                 warn("missing picture", f"{where}: {pic}")
                 return
             if not isinstance(x, int) or not isinstance(y, int):
                 x, y = 0, 0
-            pic = self.picture_name(pic)
-            self.used["sprites"].add(pic)
+            self.used["sprites"][real] = path
             w, h = self.logical_size(path)
-            scale = min(SCREEN_W / CANVAS_W, SCREEN_H / CANVAS_H)
-            left = (SCREEN_W - CANVAS_W * scale) / 2 + (CANVAS_W / 2 + x - w / 2) * scale
-            top = (SCREEN_H - CANVAS_H * scale) / 2 + (CANVAS_H / 2 + y - h / 2) * scale
+            left = self.xoff + (self.canvas_w / 2 + x - w / 2) * self.scale
+            top = self.yoff + (CANVAS_H / 2 + y - h / 2) * self.scale
+            pic = real
             fade = f" fade {ms(seconds)}" if isinstance(seconds, int) and seconds > 0 else ""
             out.append(f"show L{layer} {pic} at {round(left)} {round(top)}{fade}")
         elif cmd in ("FadeBustshot", "FadeBustshotWithFiltering"):
@@ -397,7 +516,7 @@ class Converter:
             if isinstance(args[0], int) and args[0] > 0:
                 out.append(f"wait {ms(args[0])}")
         elif cmd == "PlayBGM":
-            name = self.sound("BGM", args[1])
+            name = self.sound(self.bgm, args[1], "bgm")
             if name:
                 self.used["audio"].add(name)
                 self.music_channel = args[0]
@@ -409,20 +528,29 @@ class Converter:
                 out.append("music stop")
                 self.music_channel = None
         elif cmd == "PlaySE":
-            name = self.sound("SE", args[1])
+            name = self.sound(self.se, args[1], "se")
             if name:
                 self.used["audio"].add(name)
                 out.append(f"sfx {name}")
             else:
                 warn("missing sound", f"{where}: {args[1]}")
-        elif cmd == "StopSE":
-            out.append("sfx stop")
-        elif cmd == "PlayVoice":   # 07th-Mod
-            name = self.sound("voice", args[1])
+        elif cmd == "ModPlayVoiceLS" and args[2] in ("", "NULL"):
+            pass
+        elif cmd == "ModPlayVoiceLS":   # 07th-Mod: (channel, character, "ps3/s19/..", volume, lip sync)
+            name = self.sound(self.voice, args[2], "voice")
             if name:
                 self.used["audio"].add(name)
                 out.append(f"sfx {name}")
-        elif cmd in ("ShakeScreen", "ShakeScreenSx"):
+            else:
+                warn("missing voice", f"{where}: {args[2]}")
+        elif cmd == "StopSE":
+            out.append("sfx stop")
+        elif cmd == "PlayVoice":
+            name = self.sound(self.voice, args[1], "voice")
+            if name:
+                self.used["audio"].add(name)
+                out.append(f"sfx {name}")
+        elif cmd in ("ShakeScreen", "ShakeScreenSx", "StartShakingOfAllObjects"):
             self.flush(out)
             out.append("shake 0.40 6")
         elif cmd in ("DisableWindow", "SetValidityOfInput", "SetSpeedOfMessage", "GetAchievement",
@@ -430,11 +558,17 @@ class Converter:
                      "SetValidityOfSaving", "SetValidityOfWindowDisablingWhenGraphicsControl",
                      "SetValidityOfTextFade", "SetValidityOfInterface", "SavePoint", "SetFontSize",
                      "SetFontId", "SetCharSpacing", "SetLineSpacing", "SetScreenAspect", "SetWindowPos",
-                     "SetWindowSize", "SetWindowMargins", "SetNameFormat", "SetGUIPosition"):
+                     "SetWindowSize", "SetWindowMargins", "SetNameFormat", "SetGUIPosition",
+                     "SetGlobalFlag", "SetLocalFlag", "ModSetMainFontOutlineWidth", "ModSetConfigFontSize",
+                     "ModGenericCall", "ModNVLModeSettingLoad", "ModADVModeSettingLoad",
+                     "ModNVLADVModeSettingLoad", "WaitToFinishSEPlaying", "WaitToFinishVoicePlaying",
+                     "TerminateShakingOfAllObjects", "TerminateShakingOfWindow"):
             pass   # presentation details 3DVN handles itself
-        elif cmd in ("DrawFilm", "FadeFilm", "Negative"):
+        elif cmd in ("DrawFilm", "FadeFilm", "Negative", "ModSetLayerFilter"):
             warn("colour filter (tint / negative) not converted")
-        elif cmd in ("DrawSprite", "MoveSprite", "FadeSprite",
+        elif cmd == "ModPlayMovie":
+            warn("movie not converted", f"{where}: {args[0] if args else ''}")
+        elif cmd in ("DrawSprite", "MoveSprite", "FadeSprite", "MoveBustshot",
                      "DrawSpriteWithFiltering"):
             warn(f"effect '{cmd}' not converted")
         else:
@@ -514,11 +648,16 @@ class Converter:
             flow.append("label end")
         flow.append("stop")
         self.write("flow", flow, raw=True)
+        with open(os.path.join(self.out, "characters.3vs"), "w", encoding="utf-8") as fh:
+            fh.write("# speakers (07th-Mod ADV mode); never empty: 3DVN can't include an empty file\n")
+            for cid, (name, colour) in sorted(self.chars.items()):
+                fh.write(f"character {cid} {quote(name)} {colour}".rstrip() + "\n")
         with open(os.path.join(self.out, "main.3vs"), "w", encoding="utf-8") as fh:
             fh.write(f"# {title} - converted by import_higurashi.py\n"
                      'set _hig_step = ""\nscript ch/flow\n')
         with open(os.path.join(self.out, "game.3vc"), "w", encoding="utf-8") as fh:
-            fh.write(f"title {title}\nmenu_title {title}\ndefault_display nvl\nnvl_accumulate 1\n")
+            fh.write(f"title {title}\nmenu_title {title}\n"
+                     + ("default_display adv\n" if self.a.adv else "default_display nvl\nnvl_accumulate 1\n"))
         self.convert_pictures()
         self.copy_audio()
         return steps, tips
@@ -542,17 +681,18 @@ class Converter:
 
     # ---- assets ----
     def convert_picture(self, job):
-        pic, dest = job
-        path = self.picture(pic)
+        pic, path, dest = job
         target = os.path.join(self.out, dest, pic + (".jpg" if dest == "bg" else ".png"))
-        hd = os.path.join(self.out, "hd", dest, os.path.basename(target))
+        hd = os.path.join(self.out, "hd", dest, pic + (".jpg" if dest == "bg" else ".png"))
         if os.path.exists(target):
             return
         with Image.open(path) as image:
             image.load()
             lw, lh = self.logical_size(path)
-            scale = min(SCREEN_W / CANVAS_W, SCREEN_H / CANVAS_H)
-            w, h = max(1, round(lw * scale)), max(1, round(lh * scale))
+            w, h = max(1, round(lw * self.scale)), max(1, round(lh * self.scale))
+            if w > 1024 or h > 1024:   # 3DS texture limit (very wide/tall scenes)
+                fit = 1024 / max(w, h)
+                w, h = max(1, int(w * fit)), max(1, int(h * fit))
             if dest == "bg":
                 image = image.convert("RGB")
             else:
@@ -563,7 +703,10 @@ class Converter:
                 small.save(target, quality=88)
             else:
                 small.save(target, optimize=True)
-            if not self.a.no_hd and image.width <= 2048 and image.height <= 2048:
+            if not self.a.no_hd and (image.width > w * 1.2 or image.height > h * 1.2):
+                if image.width > 2048 or image.height > 2048:   # PC/Wii U/Android limit
+                    fit = 2048 / max(image.width, image.height)
+                    image = image.resize((int(image.width * fit), int(image.height * fit)), Image.LANCZOS)
                 os.makedirs(os.path.dirname(hd), exist_ok=True)
                 if dest == "bg":
                     image.save(hd, quality=92)
@@ -571,7 +714,8 @@ class Converter:
                     image.save(hd, optimize=True)
 
     def convert_pictures(self):
-        jobs = [(p, "bg") for p in sorted(self.used["bg"])] + [(p, "sprites") for p in sorted(self.used["sprites"])]
+        jobs = [(p, path, "bg") for p, path in sorted(self.used["bg"].items())]
+        jobs += [(p, path, "sprites") for p, path in sorted(self.used["sprites"].items())]
         with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 2) as pool:
             list(pool.map(self.convert_picture, jobs))
 
@@ -587,7 +731,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("src", help="the installed chapter folder (with HigurashiEpNN_Data)")
     ap.add_argument("out")
-    ap.add_argument("--alt-art", action="store_true", help="use the alternative character art (CGAlt)")
+    ap.add_argument("--art", choices=sorted(ART_SETS), default="console",
+                    help="art set: console (the game's default; PS3 art with 07th-Mod), remake "
+                         "(CGAlt), original (07th-Mod's Ryukishi07 art)")
+    ap.add_argument("--alt-art", action="store_true", help="same as --art remake")
+    ap.add_argument("--audio", choices=sorted(AUDIO_SETS), default="mangagamer",
+                    help="07th-Mod music/sound set (default mangagamer)")
+    ap.add_argument("--adv", action="store_true",
+                    help="07th-Mod: one line at a time with speaker names, instead of full pages")
+    ap.add_argument("--censor", type=int, default=2, help="07th-Mod censorship level 0-5 (default 2)")
     ap.add_argument("--title", default=None)
     ap.add_argument("--no-tips", action="store_true", help="leave out the TIPS")
     ap.add_argument("--no-hd", action="store_true", help="don't keep the full-size pictures in hd/")

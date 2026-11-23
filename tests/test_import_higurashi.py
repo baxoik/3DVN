@@ -126,6 +126,62 @@ class ImportHigurashiTests(unittest.TestCase):
         with Image.open(out / "hd" / "bg" / "bg_080.jpg") as image:
             self.assertEqual(image.size, (640, 480))
 
+    def test_07th_mod_full_patch(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        game = Path(temp.name) / "Higurashi"
+        sa = game / "HigurashiEp01_Data" / "StreamingAssets"
+        for folder in ("Scripts", "Update", "CG/sprite", "CG/background", "voice/ps3/s19/03", "BGM"):
+            (sa / folder).mkdir(parents=True)
+        (sa / "Scripts" / "flow.txt").write_text(FLOW)
+        (sa / "Update" / "init.txt").write_text('void main() { SetScreenAspect("0.5625"); }')
+        for name in ("onik_op", "onik_001"):
+            (sa / "Scripts" / f"{name}.txt").write_text("void main() { }")
+        (sa / "Update" / "zonik_x.txt").write_text(
+            'void dialog001() { OutputLine(NULL, "jp", NULL, "Censored text.", Line_Normal); }')
+        (sa / "Update" / "onik_000.txt").write_text("""void main()
+{
+	DrawScene( "background/gk1", 400 );
+	if (GetGlobalFlag(GADVMode)) { OutputLine("<color=#5ec69a>魅音</color>", NULL, "<color=#5ec69a>Mion</color>", NULL, Line_ContinueAfterTyping); }
+	ModPlayVoiceLS(3, 3, "ps3/s19/03/990300034", 256, TRUE);
+	ModDrawCharacter(3, 3, "sprite/me1a_def_a1_", "0", 160, 0, 0, FALSE, 0, 0, 0, 0, 0, 0, 0, 20, 300, TRUE );
+	OutputLine(NULL, "jp", NULL, "\\"We made it!\\"", GetGlobalFlag(GLinemodeSp));
+	if (GetGlobalFlag(GADVMode)) { ClearMessage(); } else { OutputLineAll(NULL, "\\n", Line_ContinueAfterTyping); }
+	if(GetGlobalFlag(GCensor) >= 4){ModCallScriptSection("zonik_x","dialog001");}
+	DrawBustshot( 3, "", 0, 0, 0, FALSE, 0, 0, 0, 0, 0, 0, 0, 0, 0, TRUE );
+}
+""")
+        Image.new("RGB", (1920, 1080)).save(sa / "CG" / "background" / "gk1.png")
+        Image.new("RGBA", (2560, 1440)).save(sa / "CG" / "sprite" / "me1a_def_a1_0.png")
+        (sa / "voice" / "ps3" / "s19" / "03" / "990300034.ogg").write_bytes(b"OggS")
+
+        def convert(*extra):
+            out = Path(temp.name) / ("out" + "".join(extra))
+            r = subprocess.run([sys.executable, "-I", str(TOOL), str(game), str(out), "--no-tips", *extra],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            return out, (out / "ch" / "onik_000.3vs").read_text()
+
+        out, nvl = convert()
+        self.assertIn("bg background/gk1", nvl)
+        self.assertIn("sfx voice/ps3/s19/03/990300034", nvl)
+        self.assertIn("show L3 sprite/me1a_def_a1_0 at 75 8 fade 0.30", nvl)   # 16:9 canvas
+        self.assertIn('"\\"We made it!\\""', nvl)
+        self.assertNotIn("Mion", nvl)                                          # NVL: no names
+        self.assertNotIn("Censored", nvl)                                      # level 2
+        self.assertIn("hide L3", nvl)
+        self.assertTrue((out / "characters.3vs").read_text().strip())          # never empty
+        with Image.open(out / "sprites" / "sprite" / "me1a_def_a1_0.png") as image:
+            self.assertEqual(image.size, (400, 225))
+        with Image.open(out / "hd" / "sprites" / "sprite" / "me1a_def_a1_0.png") as image:
+            self.assertEqual(image.size, (2048, 1152))                         # PC/Wii U limit
+
+        out, adv = convert("--adv", "--censor", "4")
+        self.assertIn('c_mion: "\\"We made it!\\""', adv)
+        self.assertIn('character c_mion "Mion" #5ec69a', (out / "characters.3vs").read_text())
+        self.assertIn('"Censored text."', adv)                                 # inlined section
+        self.assertIn("default_display adv", (out / "game.3vc").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
