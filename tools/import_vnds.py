@@ -490,6 +490,9 @@ class Converter:
                 warn("random is not supported: variable set to its low value", where)
             elif cmd == "endscript":
                 emit("stop")
+            elif cmd == "video":   # 3DVN extension (not VNDS): video/NAME.3vv, see mk3vv.py
+                if arg.split():
+                    emit(f"video {ident(os.path.splitext(arg.split()[0])[0])}")
             else:
                 warn(f"unknown command '{cmd}' skipped (VNDS ignores it too)", where)
         if held:

@@ -154,18 +154,29 @@ VNDS player skips too.
 ## Never 7 with the "end of infinity" assets
 
 `import_never7.py` converts Never 7 with the VNDS release's script but the pictures,
-voices and music of "Never 7 - the end of infinity" for LÖVE (`n7e.love`), read straight
-from the .love file:
+voices, music, movies and Append Story of "Never 7 - the end of infinity" for LÖVE
+(`n7e.love`), read straight from the .love file:
 
-    python3 tools/import_never7.py "<VNDS Never 7 folder>" n7e.love games/never7 [--music pc|psp]
+    python3 tools/import_never7.py "<VNDS Never 7 folder>" n7e.love games/never7 \
+        [--music pc|psp] [--no-movies] [--no-append] [--movie-size 320x240]
 
 - backgrounds and sprites from `upscale/` (twice the VNDS size: scaled for the 3DS screen,
-  full size in `hd/` for PC, Wii U and Android);
+  full size in `hd/` for PC, Wii U and Android). The tall panning CGs are cut into the
+  VNDS top / `-middle` / `-bottom` pieces; night sprites (`NAMEn`) are tinted as the
+  .love does;
 - voices and sound effects from `sound/` (WAV, converted to Ogg Vorbis);
-- music from `music/pc/` (default) or `music/psp/`.
+- music from `music/pc/` (default) or `music/psp/`;
+- movies: the opening, the five heroine clips and the eight endings with their songs,
+  placed where the .love's scripts play them (found by the text around them). Their
+  sound is Ogg Vorbis kept as `video/NAME.wav` (the engine reads either format there).
+  About 290 MB; `--no-movies` leaves them out, `--movie-size` limits the picture;
+- the Append Story: Yuka's eight-part story (`script/append/`), translated from the
+  .love's mix of VNDS and original-engine commands. The VNDS title menu's
+  "Append Story" (empty in the VNDS release) starts it.
 
-The few pictures the .love file lacks (VNDS-only split CGs) come from the VNDS release.
-Any other import_vnds.py option can be added at the end.
+The few pictures the .love file lacks come from the VNDS release. Any other
+import_vnds.py option can be added at the end. import_vnds.py also accepts a `video NAME`
+line in a script (a 3DVN extension, not VNDS) for `video/NAME.3vv`.
 
 ## Checking the result
 
