@@ -115,7 +115,8 @@ Besides the 15 slots, each game keeps `saves/<game>_resume.3vsav`: where you lef
 written on every way of leaving a game (back to the title or the game list, closing the
 app, HOME and sleep on the 3DS, HOME on the Wii U, before a sync) and when a new chapter
 begins, in case the power goes; only while a line or a choice is on screen, otherwise the
-previous one stays. The end of the story removes it. The title offers it as **Continue**.
+previous one stays. The end of the story removes it, here and (with auto sync) on the server,
+where it is kept as `.bak`, so Continue doesn't bring back a finished story. The title offers it as **Continue**.
 The same file is used by the 3DS, Wii U and PC versions and the Android reader.
 
 With auto sync on, a resume written on leaving is uploaded (it is where you really were

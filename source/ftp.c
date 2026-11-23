@@ -359,6 +359,16 @@ int ftp_put(FtpConn *ftp, const char *path, const unsigned char *data, size_t si
 	return 0;
 }
 
+int ftp_retire(FtpConn *ftp, const char *path)
+{
+	char backup[300], text[512];
+	snprintf(backup, sizeof(backup), "%s.bak", path);
+	if (command(ftp, text, sizeof(text), "RNFR %s", path) != 350) return 1;   /* not there */
+	command(ftp, text, sizeof(text), "DELE %s", backup);
+	command(ftp, text, sizeof(text), "RNFR %s", path);
+	return command(ftp, text, sizeof(text), "RNTO %s", backup) == 250 ? 0 : -1;
+}
+
 void ftp_mkdir(FtpConn *ftp, const char *folder)
 {
 	char text[512];

@@ -315,6 +315,7 @@ static int sync_configured(void);
 static void sync_load_config(void);
 static void build_title_items(void);
 static int autosync_resume_written;   /* the next auto sync uploads the resume whatever the clocks say */
+static int autosync_resume_ended;     /* the story ended: the next auto sync retires the server's resume */
 static void draw_sync_top(void);
 static void sync_open(void);
 static void draw_guide_top(void);
@@ -2019,6 +2020,10 @@ static void resume_forget(void)
 	save_path(RESUME_SLOT, path, sizeof(path));
 	remove(path);
 	resume_due = 0;
+	/* and the server's, or Continue would bring back a finished story */
+	autosync_resume_written = 0;
+	autosync_resume_ended = 1;
+	autosync_request();
 }
 
 static void fail_with(const char *text)
@@ -5199,6 +5204,7 @@ typedef struct {
 	struct { int slot; long long expected; unsigned char *data; size_t size; } pulls[SAVE_SLOTS];
 	int pull_count, pushed;
 	int resume_written;          /* the resume was just written here: upload it */
+	int resume_ended;            /* the story ended here: retire the server's resume */
 	char *globals;               /* merged endings / unlocks, or NULL */
 	unsigned char *reads;        /* merged read lines, or NULL */
 	size_t reads_size;
@@ -5252,6 +5258,11 @@ static void autosync_worker(void *arg)
 		snprintf(path, sizeof(path), "%s/saves/%s", job->folder, name);
 		if (in_listing(listing, wanted) && ftp_get(&ftp, path, &remote, &remote_size) != 0) remote = NULL;
 		long long here = save_data_time(local, local_size), there = save_data_time(remote, remote_size);
+		if (slot == RESUME_SLOT && job->resume_ended && local == NULL) {
+			if (remote != NULL) ftp_retire(&ftp, path);   /* kept as .bak on the server */
+			free(remote);
+			continue;
+		}
 		if (slot == RESUME_SLOT) {
 			/* uploaded when just written here (where the player really was last, whatever the
 			   clocks say) or newer; never downloaded by itself: Continue asks */
@@ -5475,7 +5486,9 @@ static void autosync_request(void)
 	snprintf(job->password, sizeof(job->password), "%s", sync_password);
 	snprintf(job->folder, sizeof(job->folder), "%s", sync_folder);
 	job->resume_written = autosync_resume_written;
+	job->resume_ended = autosync_resume_ended;
 	autosync_resume_written = 0;
+	autosync_resume_ended = 0;
 	read_save();   /* the worker reads the files: put the latest read lines there */
 	autosync_job = job;
 	autosync_finished = 0;

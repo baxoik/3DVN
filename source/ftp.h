@@ -31,6 +31,10 @@ int ftp_get(FtpConn *ftp, const char *path, unsigned char **data, size_t *size);
    becomes PATH. 0 on success. */
 int ftp_put(FtpConn *ftp, const char *path, const unsigned char *data, size_t size);
 
+/* Moves PATH out of the way, to PATH.bak (so it can still be recovered). 0 done, 1 there
+   was nothing, -1 failed. */
+int ftp_retire(FtpConn *ftp, const char *path);
+
 /* Creates a folder; an existing one is fine. */
 void ftp_mkdir(FtpConn *ftp, const char *folder);
 
