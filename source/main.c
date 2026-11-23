@@ -5646,11 +5646,9 @@ static void draw_bottom(C3D_RenderTarget *target)
 	if (mode == MODE_TITLE && panel == PANEL_NONE) {
 		const char *labels[8];
 		int count = title_touch_labels(labels);
-		draw_touch_list(config.title[0] != '\0' ? config.title : game_name, labels, count, title_cursor,
-			"Game list");
-		if (notice[0] != '\0') {
-			draw_line(notice, 20, LIST_EXTRA_Y - 18.0f, 0.42f, C2D_Color32(255, 200, 120, 255), Z_TEXT, BOTTOM_W - 40);
-		}
+		/* a notice takes the heading's place (a long title list leaves no room below it) */
+		draw_touch_list(notice[0] != '\0' ? notice : config.title[0] != '\0' ? config.title : game_name,
+			labels, count, title_cursor, "Game list");
 		return;
 	}
 	if (mode == MODE_TITLE) {
