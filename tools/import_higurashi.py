@@ -778,6 +778,7 @@ class Converter:
                 'if _hig_step == ""', '  set _hig_step = "s0"', "end"]
         for i in range(len(steps) + 1):
             flow += [f'if _hig_step == "s{i}"', f"  jump s{i}", "end"]
+        flow += ['if _hig_step == "extras"', "  jump extras", "end"]
         shown = 0
         listed = set()
         converted = set()
@@ -809,6 +810,21 @@ class Converter:
             flow.append(f'set _hig_step = "s{len(steps)}"')
             flow += self.tips_menu(late, f"s{len(steps)}", "end", converted)
             flow.append("label end")
+        # bonus scenes (omake: afterwords, extra stories), opened from the game's Extras
+        # menu in its own code: offered once the story is over
+        extras = sorted({n for n in names + [os.path.basename(p)[:-4] for p in
+                         glob.glob(os.path.join(self.sa, "Update", "*.txt"))]
+                         if re.fullmatch(r"_?omake_\d+", n)}) if not self.a.no_extras else []
+        flow.append('set _hig_step = "extras"')
+        flow.append("label extras")   # always there: the dispatch at the top jumps to it
+        if extras:
+            flow.append("menu")
+            for i, name in enumerate(extras, 1):
+                self.write(name, self.convert(name))
+                label = "Bonus scene" if len(extras) == 1 else f"Bonus scene {i}"
+                flow += [f"  choice {quote(label)}", '    set _hig_step = "extras"', f"    script ch/{ident(name)}"]
+            flow += ['  choice "Finish"', "    stop", "end"]
+            print(f"extras: {len(extras)} bonus scene(s)")
         flow.append("stop")
         self.write("flow", flow, raw=True)
         with open(os.path.join(self.out, "characters.3vs"), "w", encoding="utf-8") as fh:
@@ -903,6 +919,8 @@ def main():
                          "(the Steam game's alternative art); ryukishi: the Ryukishi07-style "
                          "sprites (the Steam game's default). Default: the game's own default")
     ap.add_argument("--no-movies", action="store_true", help="leave out the opening movie")
+    ap.add_argument("--no-extras", action="store_true",
+                    help="leave out the bonus scenes (omake) offered after the story")
     ap.add_argument("--movie-size", default="256x144",
                     help="video size (default 256x144, smooth on every 3DS; at most 512x256)")
     ap.add_argument("--audio", choices=sorted(AUDIO_SETS), default="mangagamer",

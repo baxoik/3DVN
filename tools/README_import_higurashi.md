@@ -78,9 +78,12 @@ Onikakushi: about 105 MB from the Steam release; about 470 MB with 07th-Mod
 - 07th-Mod's settings are decided when converting: its ADV/NVL switches,
   censorship branches and called script sections are resolved then.
 
+- Bonus scenes (the omake the game opens from its Extras menu, e.g.
+  Onikakushi's voiced afterword) are offered in a menu when the story is over
+  (`--no-extras` leaves them out).
+
 Not converted: lip sync (the closed-mouth frame is shown), sliding sprites,
-colour filters (red flashes, night/sunset tints), the title screen and the
-extras (`omake`). The converter lists what it skipped.
+colour filters (red flashes, night/sunset tints) and the title screen. The converter lists what it skipped.
 
 ## Chapters
 
