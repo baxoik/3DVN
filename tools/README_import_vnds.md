@@ -169,7 +169,12 @@ import_vnds.py as for any VNDS game). It reads the .love file in place:
   `-middle` / `-bottom` pieces; sprites named `...n` / `...d` are the night / dusk
   tints the port draws;
 - voices and sound effects from `sound/` (WAV, converted to Ogg Vorbis);
-- music from `music/pc/` (default) or `music/psp/`;
+- music from `music/pc/` (default) or `music/psp/`. With `--steam <…/steamapps/common/Never7>`
+  each track is replaced by the 2025 Steam remaster's (`Data/bgm_ogg.mpk`: 48 kHz,
+  ~150 kbps, a newer master with wider stereo) when the two are recognised as the same
+  piece by their sound, copied unchanged (24 of 25 tracks; one has no Steam equivalent).
+  The voices stay the .love's uncompressed ones: Steam's are the same recordings, more
+  compressed, with the line endings trimmed;
 - movies: the opening, the five heroine clips and the eight endings with their songs,
   where the scripts play them. Their sound is Ogg Vorbis kept as `video/NAME.wav` (the
   engine reads either format there). About 290 MB; `--no-movies` leaves them out,

@@ -699,7 +699,7 @@ class Converter:
 
     def convert_sound(self, job):
         key, name, is_music, ff = job
-        data_ext = os.path.splitext(key)[1]
+        data_ext = os.path.splitext(self.snd.rel(key))[1].lower()   # the real name's extension
         target_ogg = os.path.join(self.out, "audio", name + ".ogg")
         target_wav = os.path.join(self.out, "audio", name + ".wav")
         if os.path.exists(target_ogg) or os.path.exists(target_wav):

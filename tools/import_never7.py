@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Convert Never 7 to 3DVN from "Never 7 - the end of infinity" for LÖVE (n7e.love) alone.
 
-usage: import_never7.py N7E_LOVE OUT_GAME_DIR [--music pc|psp] [--no-movies] [--no-append]
+usage: import_never7.py N7E_LOVE OUT_GAME_DIR [--steam NEVER7_STEAM_FOLDER] [--music pc|psp]
+                        [--no-movies] [--no-append]
                         [--movie-size WxH] [import_vnds options]
 
 Everything comes from the .love file (read in place, nothing is extracted):
@@ -15,7 +16,11 @@ Everything comes from the .love file (read in place, nothing is extracted):
     are cut into top / -middle / -bottom pieces; sprites named ...n / ...d are the
     night / dusk tints the port draws
   - voices and sound effects: sound/ (WAV, converted to Ogg Vorbis)
-  - music: music/pc/ (or music/psp/ with --music psp)
+  - music: music/pc/ (or music/psp/ with --music psp). With --steam (the folder of the
+    2025 Steam release, "steamapps/common/Never7"), each track is replaced by the Steam
+    remaster's (Data/bgm_ogg.mpk: 48 kHz, ~150 kbps, a newer, wider-stereo master) where
+    the two are recognised as the same piece by their sound; copied unchanged. The voices
+    stay the .love's (uncompressed; Steam's are the same recordings, more compressed)
   - movies (unless --no-movies): the opening, the five heroine clips and the endings with
     their songs, where the scripts play them (video/, made with mk3vv.py)
 The VNDS release is not needed (for that one alone, use import_vnds.py).
@@ -25,6 +30,7 @@ import io
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -75,6 +81,7 @@ class LoveAssets:
             if not member.endswith("/") and any(member.startswith(f) for f in folders):
                 self.members.setdefault(stem(member), member)
         self.files = {}       # key -> name (keys: love:, piece:, tint:, plain:)
+        self.override = {}    # name -> function giving other bytes for it (Steam music)
         self.cache = {}
         self.used = set()
 
@@ -109,6 +116,8 @@ class LoveAssets:
             return self.cache[key]
         kind, s = key.split(":", 1)
         self.used.add(key)
+        if kind == "love" and s in self.override:
+            return self.override[s]()
         if kind == "plain":
             size = (int(CANVAS[0] * UPSCALE), int(CANVAS[1] * UPSCALE))
             data = png(Image.new("RGB", size, (0, 0, 0) if s == "black" else (255, 255, 255)))
@@ -143,6 +152,86 @@ class LoveAssets:
             return round(im.width / UPSCALE)
 
 
+# ---- the Steam release's music ---------------------------------------------------------
+
+class Mpk:
+    """MAGES .mpk archive (MPK\\0, version 2): name -> bytes."""
+
+    def __init__(self, path):
+        self.path = path
+        self.entries = {}
+        with open(path, "rb") as f:
+            head = f.read(16)
+            if head[:4] != b"MPK\0":
+                raise ValueError(f"{path}: not an MPK archive")
+            count = struct.unpack_from("<Q", head, 8)[0]
+            f.seek(0x40)
+            for _ in range(count):
+                e = f.read(256)
+                compressed, _, offset, csize, size = struct.unpack_from("<IIQQQ", e, 0)
+                name = e[32:].split(b"\0")[0].decode("utf-8", "replace")
+                if not compressed:
+                    self.entries[name.lower()] = (offset, csize)
+
+    def read(self, name):
+        offset, size = self.entries[name]
+        with open(self.path, "rb") as f:
+            f.seek(offset)
+            return f.read(size)
+
+
+def sound_print(data):
+    """A minute of the track as a normalised log-spectrogram, for telling pieces apart."""
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", "pipe:0", "-t", "60", "-ac", "1", "-ar", "8000",
+                          "-f", "s16le", "pipe:1"], input=data, capture_output=True).stdout
+    x = np.frombuffer(raw, dtype=np.int16).astype(float)
+    frames = [np.abs(np.fft.rfft(x[i:i + 2048] * np.hanning(2048)))[8:400]
+              for i in range(0, len(x) - 2048, 800)]
+    if not frames:
+        return None
+    spec = np.log1p(np.array(frames))
+    return (spec - spec.mean(0)) / (spec.std(0) + 1e-9)
+
+
+def print_match(a, b):
+    best = 0.0
+    for shift in range(-15, 16):        # up to ~1.5 s apart
+        x, y = a[max(0, shift):], b[max(0, -shift):]
+        n = min(len(x), len(y))
+        if n:
+            best = max(best, float((x[:n] * y[:n]).mean()))
+    return best
+
+
+def steam_music(steam, archive, folder):
+    """{track name: function giving the Steam remaster's Ogg}, for the .love's music/FOLDER/
+    tracks that clearly match a Steam track: a strong match (score > 0.45; a close second
+    is then another version of the same piece, e.g. vocal and instrumental), or a weaker
+    one (> 0.35) well ahead of the rest (1.5x)."""
+    data_dir = steam if os.path.isfile(os.path.join(steam, "bgm_ogg.mpk")) else os.path.join(steam, "Data")
+    mpk = Mpk(os.path.join(data_dir, "bgm_ogg.mpk"))
+    # bgmNN (the looping versions; bgmNNnl are the same without loop) and songNN (vocals)
+    steam_tracks = sorted(n for n in mpk.entries if re.fullmatch(r"(bgm|song)\d+\.ogg", n))
+    love_tracks = sorted(n for n in archive.namelist() if re.fullmatch(rf"music/{folder}/track_\d+\.ogg", n))
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+        prints_s = dict(zip(steam_tracks, pool.map(lambda n: sound_print(mpk.read(n)), steam_tracks)))
+        prints_l = dict(zip(love_tracks, pool.map(lambda n: sound_print(archive.read(n)), love_tracks)))
+    chosen, notes = {}, []
+    for track in love_tracks:
+        if prints_l[track] is None:
+            continue
+        scores = sorted(((print_match(prints_l[track], p), n) for n, p in prints_s.items() if p is not None),
+                        reverse=True)
+        best, runner = scores[0], scores[1] if len(scores) > 1 else (0.0, "")
+        if best[0] > 0.45 or (best[0] > 0.35 and best[0] > 1.5 * runner[0]):
+            chosen[stem(track)] = (lambda n=best[1]: mpk.read(n))
+            notes.append(f"music {stem(track)}: Steam {best[1]} (match {best[0]:.2f})")
+        else:
+            notes.append(f"music {stem(track)}: kept the .love's (no clear Steam match, best {best[0]:.2f})")
+    return chosen, notes
+
+
 # ---- movies -------------------------------------------------------------------------
 
 def movie_for(chapter, arg, music):
@@ -169,7 +258,7 @@ def movie_for(chapter, arg, music):
     return None
 
 
-def make_movies(archive, used, out, size_limit):
+def make_movies(archive, used, out, size_limit, songs=None):
     if not shutil.which("ffmpeg"):
         return ["warning: movies not converted (needs ffmpeg)"]
     tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mk3vv.py")
@@ -201,7 +290,7 @@ def make_movies(archive, used, out, size_limit):
         if song:
             sound = os.path.join(work, name + ".song.ogg")
             with open(sound, "wb") as handle:
-                handle.write(archive.read(song))
+                handle.write(songs[song]() if songs and song in songs else archive.read(song))
         has_audio = song or subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
              "-of", "csv=p=0", src], capture_output=True, text=True).stdout.strip()
@@ -531,6 +620,7 @@ def main():
         sys.exit("--music must be pc or psp")
     no_movies = take_option(args, "--no-movies")
     no_append = take_option(args, "--no-append")
+    steam = take_option(args, "--steam", True)
     movie_size = take_option(args, "--movie-size", True) or "320x240"
     m = re.fullmatch(r"(\d+)x(\d+)", movie_size)
     if not m or not (0 < int(m.group(1)) <= 512 and 0 < int(m.group(2)) <= 256):
@@ -558,6 +648,12 @@ def main():
         bgs = LoveAssets(archive, ["upscale/background/"], images=True, pans=True)
         fgs = LoveAssets(archive, ["upscale/foreground/"], images=True)
         snd = LoveAssets(archive, ["sound/", f"music/{music}/"])
+        songs = {}
+        if steam:
+            chosen, music_notes = steam_music(steam, archive, music)
+            snd.override.update(chosen)
+            songs = {f"music/{music}/{name}.ogg": get for name, get in chosen.items()}
+            notes += music_notes
 
         chapters = {stem(n): n for n in names
                     if re.fullmatch(r"script/[a-z0-9_]+\.dec", n)}     # (not ...-unlock-...)
@@ -593,7 +689,7 @@ def main():
     finally:
         shutil.rmtree(src, ignore_errors=True)
     if movies and not no_movies:
-        notes += make_movies(archive, movies, out, size_limit)
+        notes += make_movies(archive, movies, out, size_limit, songs)
     for note in notes:
         print(note)
     print(f"from n7e.love: {len(scripts) - 1} scripts ({len(parts)} Append Story), "
